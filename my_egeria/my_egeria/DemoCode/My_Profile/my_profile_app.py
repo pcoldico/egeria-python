@@ -19,9 +19,9 @@ if str(root_path) not in sys.path:
     sys.path.append(str(root_path))
 
 from pyegeria import load_app_config, settings, MyProfile, PyegeriaException, print_basic_exception, exec_report_spec, \
-    AutomatedCuration, MetadataExpert, ActorManager, EgeriaCat, CollectionManager, ProductManager, \
+    AutomatedCuration, ProductManager, \
     PyegeriaInvalidParameterException, PyegeriaAPIException, DataEngineer, copy_to_clipboard
-from pyegeria.omvs import GovernanceOfficer
+from pyegeria import Egeria
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import ScrollableContainer
@@ -30,6 +30,7 @@ from textual.widgets import DataTable, OptionList, Header, Static, Footer, Tree
 from CreateProfileScreen import CreateProfileScreen
 from EditProfileScreen import EditProfileScreen
 from EditCommunitiesScreen import EditCommunitiesScreen
+from AddCommentScreen import AddCommentScreen
 from EditIdentitiesScreen import EditIdentitiesScreen
 from EditRolesScreen import EditRolesScreen
 from EditTeamsScreen import EditTeamsScreen
@@ -66,6 +67,7 @@ class MyProfileApp(App):
         "create_profile": CreateProfileScreen,
         "edit_profile": EditProfileScreen,
         "edit_communities": EditCommunitiesScreen,
+        "add_comment": AddCommentScreen,
         "edit_identities": EditIdentitiesScreen,
         "edit_roles": EditRolesScreen,
         "edit_teams": EditTeamsScreen,
@@ -290,9 +292,13 @@ class MyProfileApp(App):
 
         self.projects_table.clear(columns=True)
         self.projects_table.add_columns("Project Name", "Description", "Qualified Name")
+        self.projects_table.zebra = True
+        self.projects_table.cursor_type = "row"
 
         self.communities_table.clear(columns=True)
         self.communities_table.add_columns("Assignment Type", "Community Name", "Description", "GUID")
+        self.communities_table.zebra = True
+        self.communities_table.cursor_type = "row"
 
         self.roles_table.clear(columns=True)
         self.roles_table.add_columns("Role Name", "Role Type","Description", "GUID")
@@ -301,12 +307,18 @@ class MyProfileApp(App):
 
         self.teams_table.clear(columns=True)
         self.teams_table.add_columns("Assignment Type", "Team Name", "Description","GUID")
+        self.teams_table.zebra = True
+        self.teams_table.cursor_type = "row"
 
         self.actions_table.clear(columns=True)
         self.actions_table.add_columns("Action Name", "Status", "Description")
+        self.actions_table.zebra = True
+        self.actions_table.cursor_type = "row"
 
         self.user_identity_table.clear(columns=True)
         self.user_identity_table.add_columns("Display Name", "User ID", "Distinguished Name")
+        self.user_identity_table.zebra = True
+        self.user_identity_table.cursor_type = "row"
 
         # Populate rows
         for p in self.projects if isinstance(self.projects, list) else []:
@@ -356,6 +368,25 @@ class MyProfileApp(App):
         await self._load_or_create_profile()
         await self._populate_tables()
         self.log("Data refresh completed.")
+
+    @on(DataTable.RowSelected, "#communities_table")
+    async def handle_community_table_row_selected(self, event: DataTable.RowSelected):
+        self.log(f"Community table row selected: {event.row}")
+        self.sel_row_key = event.row_key
+        selected_row = self.communities_table.get_row(event.row_key)
+        selected_GUID = selected_row[4]
+        self.log(f"Selected Community GUID: {selected_GUID}")
+        await self.push_screen(AddCommentScreen(selected_GUID), callback=self.add_comment_callback)
+
+    def add_comment_callback(self, result):
+        self.log(f"Comment to be added: {result}")
+        self.result = result
+        self.community_GUID = result[0]
+        self.comment = result[1]
+        fclient = Egeria(self.view_server, self.platform_url, self.user_name, self.user_password)
+        token = fclient.create_bearer_token(self.user_name, self.user_password)
+        addresult = fclient.add_comment_to_community(self.community_GUID, self.comment)
+        self.refresh()
 
     @on(OptionList.OptionSelected, "#other_function_list")
     async def handle_option_selected(self, event: OptionList.OptionSelected):
@@ -1920,8 +1951,6 @@ class MyProfileApp(App):
                 # Extract row keys and data simultaneously
                 rows_with_keys = []
                 for row_key in self.teams_table.rows:
-                    # row_key.value gets the string representation of the RowKey
-                    # get_row() returns the list of cell values for that row
                     rows_with_keys.append((row_key.value, self.teams_table.get_row(row_key)))
                 self.push_screen(EditTeamsScreen(columns, rows_with_keys), callback=self.edit_teams_callback)
         else:
