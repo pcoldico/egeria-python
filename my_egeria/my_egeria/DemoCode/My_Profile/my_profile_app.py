@@ -444,15 +444,15 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
                 )
         for r in self.roles if isinstance(self.roles, list) else []:
             self.roles_table.add_row(
-                str(r.get("Role Name", "")),
-                str(r.get("Role Type", "")),
+                str(r.get("Name", "")),
+                str(r.get("Type", "")),
                 str(r.get("Description", "")),
                 str(r.get("GUID", r.get("guid", ""))),
             )
         for t in self.teams if isinstance(self.teams, list) else []:
             self.teams_table.add_row(
                 str(t.get("Assignment Type", "")),
-                str(t.get("Team Name", "")),
+                str(t.get("Name", "")),
                 str(t.get("Description", "")),
                 str(t.get("GUID", t.get("guid", ""))),
             )
@@ -472,7 +472,7 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
             )
         for td in self.todos if isinstance(self.todos, list) else []:
             self.todos_table.add_row(
-                str(td.get("To-Do Name", "")),
+                str(td.get("Name", "")),
                 str(td.get("Activity Status", "")),
                 str(td.get("Description", "")),
                 str(td.get("GUID", td.get("guid", ""))),
@@ -519,7 +519,10 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
                 callback=self.user_identities_callback,
             )
         elif selected_option == "Catalogs/Shop for Data":
-            await self.handle_shop_for_data_option()
+            await self.handle_shop_for_data_option(self.user_name,
+                    self.user_password,
+                    self.view_server,
+                    self.platform_url,)
         elif selected_option == "Edit Profile":
             await self.push_screen(
                 EditProfileScreen(

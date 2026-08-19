@@ -36,12 +36,21 @@ from StatusScreen import StatusScreen
 class ShopForDataMixin:
     """Mixin class providing Catalogs & Shop For Data functionality for MyProfileApp."""
 
-    async def handle_shop_for_data_option(self) -> Any:
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    async def handle_shop_for_data_option(self, user_name: str, user_password: str, view_server: str, platform_url: str) -> Any:
         """Push new Screen, Show Glossaries, Digital Product Catalogs, Data Dictionaries and
         Business Domains, allow the user to select from one of the 4 categories and use that selection to
         display a list of available collections of the chosen type and allow the user to subscribe to them.
         """
+
         # start by gathering the data using Pyegeria to access the Egeria backend servers
+
+        self.user_name = user_name
+        self.user_password = user_password
+        self.view_server = view_server
+        self.platform_url = platform_url
 
         # Glossaries
         glossary_table: DataTable = DataTable(id="glossary_table")
@@ -184,7 +193,8 @@ class ShopForDataMixin:
             self.collections = exec_report_spec(
                 format_set_name="BasicCollections",
                 output_format="DICT",
-                params={"search_string": "RootCollection"},
+                params={"search_string": "RootCollection",
+                        "page_size": 20},
                 view_server=self.view_server,
                 view_url=self.platform_url,
                 user=self.user_name,
@@ -193,20 +203,19 @@ class ShopForDataMixin:
         except PyegeriaException as e:
             print_basic_exception(e)
             self.collections = "Error retrieving collections: " + str(e)
+            self.root_collection_table.add_row("No root collections found", self.collections, "")
         self.log(f"Found {len(self.collections)} root collections for user {self.user_name}")
         self.log(f"Root collections: {self.collections}")
-        if isinstance(self.collections, str):
-            self.root_collection_table.add_row("No root collections found", self.collections, "")
-        elif isinstance(self.collections, dict) and self.collections.get("kind") == "json":
-            self.collections = self.collections.get("data")
-            for collection in self.collections:
+        if isinstance(self.collections, dict) and self.collections.get("kind") == "json":
+            self.collections_data = self.collections.get("data")
+            for collection in self.collections_data:
                 self.root_collection_table.add_row(
                     collection.get("Qualified Name"),
                     collection.get("Type Name"),
                     collection.get("GUID"),
                 )
         elif isinstance(self.collections, list):
-            for collection in self.collections:
+            for collection in self.collections_data:
                 self.root_collection_table.add_row(
                     collection.get("Qualified Name"),
                     collection.get("Type Name"),
