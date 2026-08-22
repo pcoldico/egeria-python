@@ -132,6 +132,7 @@ class MyProfileApp(App):
         self.graph_query_depth = 0  # This tell egeria not to include relationships in the response packet
         self.user_GUID = ""
         self.user_data = {}
+        self.row_guid = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -265,10 +266,13 @@ class MyProfileApp(App):
         # Normalize expected keys
         self.full_name = self.user_profile.get("Full Name") or ""
         self.sub_title = f"{self.full_name} ({self.user_profile.get('User ID')}, Karma Points: {self.karma_points})"
-        self.projects = self.my_projects_data or []
+        self.projects = self.my_projects_data or self.user_profile.get("Projects") or []
         self.communities = self.my_communities_data or []
         self.roles = self.my_roles_data or []
-        self.actions = self.user_profile.get("actions") or []
+        self.blogs = self.user_profile.get("Blogs") or []
+        self.activity = self.user_profile.get("Activity") or []
+        self.journal = self.user_profile.get("Journal") or []
+        # self.actions = self.user_profile.get("actions") or []
         self.teams = self.my_teams_data or []
         if isinstance(self.user_identities, list):
             self.user_identity = self.user_identities
@@ -281,14 +285,20 @@ class MyProfileApp(App):
         self.projects_table = main_screen.query_one("#projects_table", DataTable)
         self.communities_table = main_screen.query_one("#communities_table", DataTable)
         self.roles_table = main_screen.query_one("#roles_table", DataTable)
-        self.actions_table = main_screen.query_one("#actions_table", DataTable)
+        self.blog_table = main_screen.query_one("#blog_table", DataTable)
+        self.activity_table = main_screen.query_one("#activity_table", DataTable)
+        self.journal_table = main_screen.query_one("#journal_table", DataTable)
+        # self.actions_table = main_screen.query_one("#actions_table", DataTable)
         self.user_identity_table = main_screen.query_one("#user_identity_table", DataTable)
         self.teams_table = main_screen.query_one("#teams_table", DataTable)
 
         assert self.projects_table is not None
         assert self.communities_table is not None
         assert self.roles_table is not None
-        assert self.actions_table is not None
+        # assert self.actions_table is not None
+        assert self.blog_table is not None
+        assert self.activity_table is not None
+        assert self.journal_table is not None
         assert self.user_identity_table is not None
         assert self.teams_table is not None
 
@@ -312,10 +322,20 @@ class MyProfileApp(App):
         self.teams_table.zebra = True
         self.teams_table.cursor_type = "row"
 
-        self.actions_table.clear(columns=True)
-        self.actions_table.add_columns("Action Name", "Status", "Description")
-        self.actions_table.zebra = True
-        self.actions_table.cursor_type = "row"
+        self.journal_table.clear(columns=True)
+        self.journal_table.add_columns("Journal Entry", "Date", "Description")
+        self.journal_table.zebra = True
+        self.journal_table.cursor_type = "row"
+
+        self.blog_table.clear(columns=True)
+        self.blog_table.add_columns("Blog Title", "Date", "Description")
+        self.blog_table.zebra = True
+        self.blog_table.cursor_type = "row"
+
+        self.activity_table.clear(columns=True)
+        self.activity_table.add_columns("Activity Name", "Date", "Description")
+        self.activity_table.zebra = True
+        self.activity_table.cursor_type = "row"
 
         self.user_identity_table.clear(columns=True)
         self.user_identity_table.add_columns("Display Name", "User ID", "Distinguished Name")
@@ -346,10 +366,31 @@ class MyProfileApp(App):
                 str(r.get("GUID", "")),
             )
 
-        for a in self.actions if isinstance(self.actions, list) else []:
-            self.actions_table.add_row(
-                str(a.get("Display Name", "")),
-                str(a.get("Description", "")),
+        # for a in self.actions if isinstance(self.actions, list) else []:
+        #     self.actions_table.add_row(
+        #         str(a.get("Display Name", "")),
+        #         str(a.get("Description", "")),
+        #     )
+
+        for b in self.blogs if isinstance(self.blogs, list) else []:
+            self.blog_table.add_row(
+                str(b.get("title", "")),
+                str(b.get("time", "")),
+                str(b.get("text", "")),
+            )
+
+        for j in self.journal if isinstance(self.journal, list) else []:
+            self.journal_table.add_row(
+                str(j.get("title", "")),
+                str(j.get("time", "")),
+                str(j.get("text", "")),
+            )
+
+        for a in self.activity if isinstance(self.activity, list) else []:
+            self.activity_table.add_row(
+                str(a.get("title", "")),
+                str(a.get("time", "")),
+                str(a.get("text", "")),
             )
 
         for t in self.teams if isinstance(self.teams, list) else []:
@@ -1650,28 +1691,50 @@ class MyProfileApp(App):
         # Once all the fields are complete we can leave it to the screen processing to handle the rest
         return (200)
 
-    @on(DataTable.RowSelected, "#roles_table")
-    def handle_roles_table_row_selection(self, event):
-        role_table = event.data_table
-        selected_row_key = event.row_key
-        selected_row_data = role_table.get_row(selected_row_key)
-        selected_role_description = selected_row_data[2]
-        selected_role_name = selected_row_data[0]
-        selected_role_type = selected_row_data[1]
-        selected_role_guid = selected_row_data[3]
-        self.log(f"Selected role: {selected_row_data}")
+    # def on_data_table_row_selected(self, event: DataTable.RowSelected):
+    #     self.selected_data_table = event.data_table
+    #     self.selected_row_key = event.row_key
+    #     self.selected_row_data = self.selected_data_table.get_row(self.selected_row_key)
+    #     self.log(f"Selected role: {self.selected_row_data}")
+
+    # @on(DataTable.RowSelected, "#roles_table")
+    # def handle_roles_table_row_selection(self, event):
+    # def action_edit_roles(self):
+    #     main_screen = self.get_screen("main")
+    #     role_table = main_screen.query_one("#role_table", DataTable)
+    #     self.push_screen(EditRolesScreen(role_table=role_table), callback=self.status_callback)
+
+    def show_team(self, row_key):
+        """ called from the edit user screen to display team members for a given role"""
+        row_data = []
+        try:
+            role_table = self.query_one("#roles_table", DataTable)
+            row_data = role_table.get_row(row_key)
+        except PyegeriaException as e:
+            self.notify(f"Error displaying team members: {e}")
+            return
+        self.log(f"Selected role: {row_data}")
+        if row_data:
+            selected_role_description = row_data[2]
+            selected_role_name = row_data[0]
+            selected_role_type = row_data[1]
+            selected_role_guid = row_data[3]
+        else:
+            self.notify(f"Displaying team members is only supported for Role  Table Entries")
+            return()
         team_members_list: list = []
         self.team_members = []
 
-        # provide list of team members for team leader
-        if "TeamLeader" in selected_role_name or "TeamLeader" in selected_role_type:
-            self.log(f"Selected role is a TeamLeader: {selected_role_name}")
-            team_members_list, team_display_name, team_qualified_name, team_category, team_description = self.find_team_members(selected_role_name)
-        elif "TeamMembers" in selected_role_name or "TeamMembers" in selected_role_type:
-            self.log(f"Selected role is a TeamMember: {selected_role_name}")
-            team_members_list, team_display_name, team_qualified_name, team_category, team_description = self.find_team_members(selected_role_name)
+        # provide list of team members for team leader or team member
+        if ("TeamLeader" in selected_role_name or "TeamLeader" in selected_role_type or
+                "TeamMember" in selected_role_name or "TeamMember" in selected_role_type):
+            self.log(f"Selected role is a TeamLeader or TeamMember: {selected_role_name}")
+            result = self.find_team_members(selected_role_name)
+            if not isinstance(result, tuple) or len(result) != 5:
+                return
+            team_members_list, team_display_name, team_qualified_name, team_category, team_description = result
         else:
-            self.log(f"Selected role is not a TeamLeader or TeamMember: {selected_role_name}")
+            self.notify(f"Selected role is not a TeamLeader or TeamMember: {selected_role_name}")
             return (201)
 
         self.log(f"team_members_list: {team_members_list}")
@@ -1733,7 +1796,7 @@ class MyProfileApp(App):
             error_message = "No team members found"
             self.log(f"Error retrieving team members: {error_category}, {error_message}")
             self.push_screen(StatusScreen(f"{error_category}: {error_message}"), callback=self.status_callback)
-            return
+            return ([], None, None, None, None)
         team_members_list.clear()
         for team_member in team_members_data_struct:
             # get team details
@@ -1762,7 +1825,7 @@ class MyProfileApp(App):
                 error_message = "No team member details found"
                 self.log(f"Error retrieving team member details: {error_category}, {error_message}")
                 self.push_screen(StatusScreen(f"{error_category}: {error_message}"), callback=self.status_callback)
-                return (430)
+                return ([], None, None, None, None)
 
     def my_team_callback(self, status) -> None:
         self.log(f"Callback received with status: {status}")
@@ -1885,7 +1948,7 @@ class MyProfileApp(App):
         return data
 
     def user_identities_callback(self):
-        """ Callback roiutine for the user identities screen
+        """ Callback routine for the user identities screen
             the user has requested to exit the screen and so will will
             push the main screen again"""
         self.push_screen("main")
@@ -1900,8 +1963,16 @@ class MyProfileApp(App):
                 table.add_row(*cell_values, key=key_str)
         self.push_screen("main")
 
-    def edit_communities_callback(self, rows_with_keys):
+    def edit_communities_callback(self, response):
         """ Callback for EditCommunitiesScreen """
+        self.response = response
+        if isinstance(self.response, list):
+            self.action = self.response[0]
+            if self.action == "add":
+                self.new_name = self.response[1]
+                self.new_description = self.response[2]
+                self.new_mission = self.response[3]
+                pass
         if isinstance(rows_with_keys, list):
             main_screen = self.get_screen("main")
             table = main_screen.query_one("#communities_table", DataTable)
@@ -1983,6 +2054,94 @@ class MyProfileApp(App):
         else:
             self.log(f"Unexpected return type from EditProfileScreen: {type(return_c)}")
             self.push_screen("main")
+
+    def edit_selected_table(self):
+        pass
+
+    def add_note(self):
+        pass
+
+    def show_notes(self):
+        pass
+
+    def delete_community(self, row_data) -> int:
+        """ Delete Community Record from Egeria
+            Successful deletion returns - 200
+            Unsuccessful deletion returns - 400 """
+
+        self.log(f"Delete Community Record from Egeria", {"row_data": row_data})
+        self.row_data = row_data
+        self_row_guid = row_data[3]
+        eclient = Egeria(
+            view_server=self.view_server,
+            platform_url=self.platform_url,
+            user_id=self.user_name,
+            user_pwd=self.user_password
+        )
+        token = eclient.create_egeria_bearer_token(self.user_name, self.user_password)
+        try:
+            # --- API call (show at minimum the required params; document optional ones) ---
+            body = {
+                "class": "DeleteCommunityRequestBody",
+                "communityGuid": self.row_guid
+            }
+            eclient.delete_metadata_element(body)
+            self.log(f"Community record deleted successfully: {self_row_guid}")
+            del_comm_rc = 200
+        except PyegeriaException as e:
+            print_basic_exception(e)
+            self.log(f"Error deleting community record: {self.row_guid}, error: {e}")
+            del_comm_rc = 400
+        finally:
+            eclient.close_session()
+        return(del_comm_rc)
+
+    def remove_link_to_community(self, row_data) -> int:
+        """ Delete link to Community from the Actor Profile
+            Successful deletion returns - 200
+            Unsuccessful deletion returns - 400 """
+
+        self.log(f"Remove link to Community from Egeria", {"row_data": row_data})
+        self.row_data = row_data
+        self_row_guid = row_data[3]
+        eclient = Egeria(
+            view_server=self.view_server,
+            platform_url=self.platform_url,
+            user_id=self.user_name,
+            user_pwd=self.user_password
+        )
+        token = eclient.create_egeria_bearer_token(self.user_name, self.user_password)
+        try:
+            # Remove a link to a community from the actor profile for the current user
+            body = {
+                "class": "NewElementRequestBody",
+                "isOwnAnchor": True,
+                "effectiveFrom": "{{$isoTimestamp}}",
+                "effectiveTo": "{{$isoTimestamp}}",
+                "properties": {
+                    "class": "ActorProfileProperties",
+                    "typeName":  self.actor_profile["Type Name"],
+                    "qualifiedName": eclient.__create_qualified_name__(self.actor_profile["GUID"]),
+                    "displayName": self.actor_profile["Name"],  # short name
+                    "description": self.actor_profile["Description"]
+                }
+            }
+            #have to call egeria for the guid of the link to remove
+            link_to_community_guid = "link to community GUID"  # replace with actual value
+
+            eclient.remove_actor_profile_link(
+                body=body,
+                link_type="CommunityLink",
+                guid=link_to_community_guid
+            )
+
+        except PyegeriaException as e:
+            print_basic_exception(e)
+            self.log(f"Error deleting community record: {self.row_guid}, error: {e}")
+            del_comm_rc = 400
+        finally:
+            eclient.close_session()
+        return(del_comm_rc)
 
 
 if __name__ == "__main__":

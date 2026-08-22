@@ -16,12 +16,23 @@ from textual.widgets._option_list import Option
 class MainScreen(Screen):
     """Main Screen for My Profile App."""
 
+    BINDINGS = [
+        ("q", "app.quit", "Quit"),
+        ("ctrl+e", "edit_selected_table", "Edit Selected Table"),
+        ("ctrl+a", "add_note", "Add Note to Selected Item"),
+        ("ctrl+s", "show_notes", "Show Notes for Selected Item"),
+        ("ctrl+t", "show_team", "Show Team Members for Selected Role"),
+        ("r", "app.refresh", "Refresh")
+    ]
+
     CSS_PATH = "my_profile.tcss"
 
     def __init__(self):
         super().__init__(id="main_screen")
-        self.title = "Egeria"
-        self.sub_title = "My Profile"
+        self.title = "Egeria - My Profile"
+        self.sub_title = "Click any row in a table to edit that table"
+        self.row_key = None
+        self.table = None
 
     def compose(self) -> ComposeResult:
         # place widgets into grid on screen, note sequence determines position!
@@ -67,8 +78,12 @@ class MainScreen(Screen):
         )
 
         yield ScrollableContainer(
-            Static("Actions"),
-            DataTable(id="actions_table"),
+            Static("Journal"),
+            DataTable(id="journal_table"),
+            Static("Blogs"),
+            DataTable(id="blog_table"),
+            Static("Activities"),
+            DataTable(id="activity_table"),
             id="main_actions_container"
         )
 
@@ -79,3 +94,37 @@ class MainScreen(Screen):
         )
 
         yield Footer(id="main_footer")
+
+    def action_show_team(self):
+        self.log(f"action_show_team, row_key: {self.row_key}, table: {self.table}")
+        if self.row_key and self.table == "roles_table":
+            self.app.show_team(self.row_key)
+        else:
+            self.notify(f"Team Members can only be displayed by selecting a role in the Roles table first")
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected):
+        self.log(f"{event}, event.row_key: {event.row_key}, table: {event.data_table}")
+        self.row_key = event.row_key
+        self.table = event.data_table
+
+    def action_edit_selected_table(self):
+        self.log(f"action_edit_selected_table, row_key: {self.row_key}, table: {self.table}")
+        if self.table:
+            self.app.action_edit_selected_table(self.table)
+        else:
+            self.notify(f"Please select a table first")
+
+    def action_add_note(self):
+        self.log(f"action_add_note, row_key: {self.row_key}, table: {self.table}")
+        if self.row_key and self.table:
+            self.app.action_add_note(self.row_key, self.table)
+        else:
+            self.notify(f"Please select a table and row first")
+
+    def action_show_notes(self):
+        self.log(f"action_show_notes, row_key: {self.row_key}, table: {self.table}")
+        if self.row_key and self.table:
+            self.app.action_show_notes(self.row_key, self.table)
+        else:
+            self.notify(f"Please select a table and row first")
+
