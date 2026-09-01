@@ -18,8 +18,9 @@ class MainScreen(Screen):
 
     BINDINGS = [
         ("q", "app.quit", "Quit"),
-        ("ctrl+e", "edit_table", "Edit Selected Table"),
+        ("ctrl+b", "bookmarks", "Manage Bookmarks"),
         ("ctrl+s", "show_comments", "Show Comments for Selected Row"),
+        ("ctrl+t", "edit_table", "Edit Selected Table"),
     ]
 
     CSS_PATH = "my_profile.tcss"
@@ -135,4 +136,11 @@ class MainScreen(Screen):
             return focused_widget
 
         return None
+
+    def action_bookmarks(self):
+        """ Manages BookMarks for the currently logged in user
+            Note - to add a new bookmark you must first have found and copied
+            the GUID of the item you want to bookmark to the clipboard
+            as you will need to know it during the add processing"""
+        self.app.show_my_bookmarks()
 

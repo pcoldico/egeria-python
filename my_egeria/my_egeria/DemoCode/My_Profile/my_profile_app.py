@@ -81,6 +81,7 @@ from tech_types_handler import TechTypesMixin
 from shop_for_data_handler import ShopForDataMixin
 from team_roles_handler import TeamRolesMixin
 from elements_crud_handler import ElementsCrudMixin
+from MyBookMarksScreen import MyBookMarksScreen
 
 
 class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, ElementsCrudMixin):
@@ -132,6 +133,7 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
         "view_subscriptions": ViewSubscriptionsScreen,
         "generic_data_view": GenericDataViewScreen,
         "data_view": DataViewScreen,
+        "my_bookmarks": MyBookMarksScreen,
     }
 
     def __init__(self, *args, **kwargs):
@@ -144,8 +146,6 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
         load_app_config()
         app_config = settings.Environment
         app_user = settings.User_Profile
-        print("Platform:", app_config.egeria_platform_url)
-        print("View Server:", app_config.egeria_view_server)
         self.user_name = app_user.user_name or "garygeeke"
         self.user_password = app_user.user_pwd or "secret"
         self.view_server = app_config.egeria_view_server or "qs-view-server"
@@ -619,6 +619,100 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
                     catalog_item.get("Qualified Name", ""),
                 )
         return 200
+
+    def show_my_bookmarks(self) -> None:
+        """ Access Egeria to retrieve all bookmarks for the current user """
+        try:
+            eclient = Egeria(self.view_server,
+                             self.platform_url,
+                             self.user_name,
+                             self.user_password)
+
+            # Acquire a bearer token for authentication
+            token = eclient.create_egeria_bearer_token(self.user_name, self.user_password)
+            # Retrieve bookmarks for current user
+            my_bookmarks = eclient.get_favorite_things(user_id=self.user_name)
+        #unless there is an errror returned from Egeria
+        except PyegeriaException as e:
+            print(f"An error occurred interacting with Egeria: {e}")
+            self.notify(f"An error occurred interacting with Egeria: {e}")
+            return
+
+        finally:
+            # 4. Canonical pattern to cleanly terminate the connection session
+            if 'eclient' in locals():
+                eclient.close_session()
+
+        if my_bookmarks:
+            self.push_screen(MyBookMarksScreen(my_bookmarks))
+        return
+
+    def add_my_bookmark(self, target_guid) -> None:
+        """ Add a bookmark for the user, input is the GUID of the item to bookmark """
+        self.asset_guid = target_guid
+        try:
+            eclient = Egeria(self.view_server,
+                             self.platform_url,
+                             self.user_name,
+                             self.user_password)
+
+            # 2. Acquire a bearer token for authentication
+            token = eclient.create_egeria_bearer_token(self.user_name, self.user_password)
+
+            self.log(f"Adding asset {self.asset_guid} to {self.user_name}'s Favorite Things Collection...")
+
+            # 3. Attach the asset to the user's bookmark collection
+            # In pyegeria, this maps directly to the underlying My Profile Open Metadata View Service
+            bookmark_relationship = eclient.add_asset_to_favorites(
+                user_id=self.user_name,
+                asset_guid=self.asset_guid
+            )
+
+            self.log("Successfully bookmarked item!")
+            self.log(f"Relationship Guid: {bookmark_relationship.get('guid')}")
+            self.notify(f"Successfully bookmarked item! Relationship Guid: {bookmark_relationship.get('guid')}")
+
+        except PyegeriaException as e:
+            print(f"An error occurred interacting with Egeria: {e}")
+
+        finally:
+            # 4. Canonical pattern to cleanly terminate the connection session
+            if 'eclient' in locals():
+                eclient.close_session()
+
+    def delete_my_bookmark(self, target_guid) -> None:
+        """ Delete a bookmark for the user, input is the GUID of the bookmark to delete  """
+        self.asset_guid = target_guid
+
+        try:
+            eclient = Egeria(self.view_server,
+                             self.platform_url,
+                             self.user_name,
+                             self.user_password)
+
+            # 2. Acquire a bearer token for authentication
+            token = eclient.create_egeria_bearer_token(self.user_name, self.user_password)
+
+            self.log(f"Adding asset {self.asset_guid} to {self.user_name}'s Favorite Things Collection...")
+
+            # 3. Attach the asset to the user's bookmark collection
+            # In pyegeria, this maps directly to the underlying My Profile Open Metadata View Service
+            eclient.remove_asset_from_favorites(
+                user_id=self.user_name,
+                asset_guid=self.asset_guid
+            )
+
+            self.log("Successfully deleted bookmark!")
+            self.log(f"Relationship Guid: {self.asset_guid}")
+            self.notify(f"Successfully deleted bookmark! Guid: {self.asset_guid}")
+
+        except PyegeriaException as e:
+            print(f"An error occurred interacting with Egeria: {e}")
+
+        finally:
+            # 4. Canonical pattern to cleanly terminate the connection session
+            if 'eclient' in locals():
+                eclient.close_session()
 
     # Compatibility wrappers delegating to profile_utils
     def clean_structure(self, data: Any, target: str = "specificationMermaidGraph") -> Any:
