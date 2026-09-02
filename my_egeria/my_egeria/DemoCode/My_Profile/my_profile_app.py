@@ -145,11 +145,17 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
         self.description = "Display the user related items for the current user."
         load_app_config()
         app_config = settings.Environment
+        self.log(f"Application Config: {app_config}")
         app_user = settings.User_Profile
+        self.log(f"User Profile: {app_user}")
         self.user_name = app_user.user_name or "garygeeke"
         self.user_password = app_user.user_pwd or "secret"
         self.view_server = app_config.egeria_view_server or "qs-view-server"
         self.platform_url = app_config.egeria_platform_url or "https://127.0.0.1:9443"
+        self.log(f"Platform URL: {self.platform_url}")
+        self.log(f"View Server: {self.view_server}")
+        self.log(f"User: {self.user_name}")
+        self.log(f"User PWD: {self.user_password}")
 
         # Ensure compose() is safe before data loads
         self.actor_profile: dict = {}
@@ -541,7 +547,7 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
                 callback=self.edit_profile_callback,
             )
         elif selected_option == "User Bookmarks":
-            pass
+            self.show_my_bookmarks()
         elif selected_option == "Subscriptions":
             await self.push_screen(ViewSubscriptionsScreen(), callback=self.view_subscriptions_callback)
 

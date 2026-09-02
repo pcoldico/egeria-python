@@ -56,7 +56,7 @@ class MainScreen(Screen):
                 Option("Edit Profile"),
                 Option("Subscriptions"),
                 Option("Technology Types"),
-                Option("User Bookmarks", disabled=True),
+                Option("User Bookmarks"),
                 id="other_function_list"
             ),
             id="other_function_container"
