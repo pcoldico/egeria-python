@@ -394,7 +394,7 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
             self.communities_table.cursor_type = "row"
 
         self.digital_product_catalog_table: DataTable = DataTable(id="digital_product_catalog_table")
-        self.digital_product_catalog_table.add_columns("Digital Product Catalog Name", "Description", "Qualified Name")
+        self.digital_product_catalog_table.add_columns("Digital Product Catalog Name", "Description", "Qualified Name", "GUID")
         self.digital_product_catalog_table.cursor_type = "row"
         self.digital_product_catalog_table.zebra_stripes = True
 
@@ -583,12 +583,12 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
         """Fetch and populate digital product catalog table."""
         if not hasattr(self, "digital_product_catalog_table") or self.digital_product_catalog_table is None:
             self.digital_product_catalog_table = DataTable(id="digital_product_catalog_table")
-            self.digital_product_catalog_table.add_columns("Digital Product Catalog Name", "Description", "Qualified Name")
+            self.digital_product_catalog_table.add_columns("Digital Product Catalog Name", "Description", "Qualified Name", "GUID")
             self.digital_product_catalog_table.cursor_type = "row"
             self.digital_product_catalog_table.zebra_stripes = True
         else:
             self.digital_product_catalog_table.clear(columns=True)
-            self.digital_product_catalog_table.add_columns("Digital Product Catalog Name", "Description", "Qualified Name")
+            self.digital_product_catalog_table.add_columns("Digital Product Catalog Name", "Description", "Qualified Name", "GUID")
             self.digital_product_catalog_table.cursor_type = "row"
             self.digital_product_catalog_table.zebra_stripes = True
 
@@ -623,21 +623,63 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
                     catalog_item.get("Display Name", ""),
                     catalog_item.get("Description", ""),
                     catalog_item.get("Qualified Name", ""),
+                    catalog_item.get("GUID", ""),
                 )
         return 200
 
     def show_my_bookmarks(self) -> None:
         """ Access Egeria to retrieve all bookmarks for the current user """
-        try:
-            eclient = Egeria(self.view_server,
-                             self.platform_url,
-                             self.user_name,
-                             self.user_password)
+        eclient = Egeria(self.view_server,
+                         self.platform_url,
+                         self.user_name,
+                         self.user_password)
 
-            # Acquire a bearer token for authentication
-            token = eclient.create_egeria_bearer_token(self.user_name, self.user_password)
+        # Acquire a bearer token for authentication
+        token = eclient.create_egeria_bearer_token(self.user_name, self.user_password)
+        try:
+
             # Retrieve bookmarks for current user
-            my_bookmarks = eclient.get_favorite_things(user_id=self.user_name)
+            # my_bookmarks = eclient.get_favorite_things(user_id=self.user_name)
+            # --- API call (show at minimum the required params; document optional ones) ---
+            body = {
+                "class": "SearchStringRequestBody",
+                "searchString": "*"
+            }
+            response = eclient.find_locations(
+                search_string="*",
+                starts_with=False,
+                ends_with=True,  # default is False
+                ignore_case=True,  # default is True
+                metadata_element_type_name=None,  # optional; e.g. 'LocationProperties'
+                metadata_element_subtypes=[],
+                include_only_relationships=[],  # list of relationship types to include in the search results
+                skip_relationships=[],  # list of relationship types to exclude from the search results
+                graph_query_depth=0,  # default is 3; max depth for recursive query (0 = no recursion)
+                as_of_time=None,
+                start_from=1,  # offset into result set (default: 1); use -1 for "all"
+                page_size=100,  # number of items to return per call
+                sequencing_order="ASC",  # optional; e.g. 'DESC'
+                sequencing_property="",  # optional; e.g. 'qualifiedName' or a custom property name
+                output_format='DICT',  # default is json; other options: csv, xml
+                report_spec=None,
+                body=body  # the full request body for search string requests (optional)
+            )
+
+            # --- Output rendering ---
+            if isinstance(response, list):
+                self.log(f"Found {len(response)} items")
+                self.log(f"Response: {response}")
+                my_bookmarks = response[0].get("Data") or ""
+            elif isinstance(response, dict):
+                my_bookmarks = response.get("Data") or ""
+            elif isinstance(response, str):
+                self.log(f"Response: {response}")
+                self.notify(f"Response from get bookmarks:")
+                my_bookmarks = None
+            else:
+                self.log(f"Response unknown: {type(response)}, {response}")
+                my_bookmarks = None
+
         #unless there is an errror returned from Egeria
         except PyegeriaException as e:
             print(f"An error occurred interacting with Egeria: {e}")
@@ -649,21 +691,22 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
             if 'eclient' in locals():
                 eclient.close_session()
 
-        if my_bookmarks:
-            self.push_screen(MyBookMarksScreen(my_bookmarks))
+        self.push_screen(MyBookMarksScreen(my_bookmarks))
+
         return
 
     def add_my_bookmark(self, target_guid) -> None:
         """ Add a bookmark for the user, input is the GUID of the item to bookmark """
         self.asset_guid = target_guid
-        try:
-            eclient = Egeria(self.view_server,
-                             self.platform_url,
-                             self.user_name,
-                             self.user_password)
+        eclient = Egeria(self.view_server,
+                         self.platform_url,
+                         self.user_name,
+                         self.user_password)
 
-            # 2. Acquire a bearer token for authentication
-            token = eclient.create_egeria_bearer_token(self.user_name, self.user_password)
+        # 2. Acquire a bearer token for authentication
+        token = eclient.create_egeria_bearer_token(self.user_name, self.user_password)
+        try:
+
 
             self.log(f"Adding asset {self.asset_guid} to {self.user_name}'s Favorite Things Collection...")
 
@@ -689,15 +732,15 @@ class MyProfileApp(App, TechTypesMixin, ShopForDataMixin, TeamRolesMixin, Elemen
     def delete_my_bookmark(self, target_guid) -> None:
         """ Delete a bookmark for the user, input is the GUID of the bookmark to delete  """
         self.asset_guid = target_guid
+        eclient = Egeria(self.view_server,
+                         self.platform_url,
+                         self.user_name,
+                         self.user_password)
 
+        # 2. Acquire a bearer token for authentication
+        token = eclient.create_egeria_bearer_token(self.user_name, self.user_password)
         try:
-            eclient = Egeria(self.view_server,
-                             self.platform_url,
-                             self.user_name,
-                             self.user_password)
 
-            # 2. Acquire a bearer token for authentication
-            token = eclient.create_egeria_bearer_token(self.user_name, self.user_password)
 
             self.log(f"Adding asset {self.asset_guid} to {self.user_name}'s Favorite Things Collection...")
 

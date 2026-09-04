@@ -7,7 +7,7 @@
 """
 from textual import on
 from textual.app import ComposeResult
-from textual.containers import ScrollableContainer, Container
+from textual.containers import ScrollableContainer, Container, Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Header, Static, Footer, Placeholder, Input, Button
 from pyegeria import (load_app_config,
@@ -20,18 +20,17 @@ class MyBookMarksScreen(ModalScreen):
     """Main Screen for My Profile App."""
 
     BINDINGS = [
-        ("q", "app.quit", "Quit"),
+        ("q", "quit", "Quit"),
         ("ctrl+n", "new_bookmark", "Add New Bookmark"),
         ("ctrl+r", "remove_bookmark", "Delete Selected Bookmark"),
     ]
 
     CSS_PATH = "my_profile.tcss"
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, my_bookmarks, *args, **kwargs):
         super().__init__(id="bookmark_screen", *args, **kwargs)
         self.title = "Egeria"
         self.sub_title = "My Bookmarks"
-        self.my_bookmarks_data = None
         load_app_config()
         app_config = settings.Environment
         app_user = settings.User_Profile
@@ -39,25 +38,25 @@ class MyBookMarksScreen(ModalScreen):
         self.user_password = app_user.user_pwd or "secret"
         self.view_server = app_config.egeria_view_server or "qs-view-server"
         self.platform_url = app_config.egeria_platform_url or "https://127.0.0.1:9443"
+        self.my_bookmarks_data = my_bookmarks
 
     def on_mount(self) -> None:
-        my_bookmark_table: DataTable = DataTable(id="my_bookmark_table")
-        my_bookmark_table.zebra_stripes=True
-        my_bookmark_table.cursor_type="row"
-        my_bookmark_table.add_columns("", "", "")
-        self.my_bookmarks_data=self.app.show_my_bookmarks()
+        self.my_bookmark_table: DataTable = DataTable(id="my_bookmark_table")
+        self.my_bookmark_table.zebra_stripes=True
+        self.my_bookmark_table.cursor_type="row"
+        self.my_bookmark_table.add_columns("", "", "")
         self.log(f"Bookmark Data:{self.my_bookmarks_data}")
         if self.my_bookmarks_data == None:
-            my_bookmark_table.add_row("No Bookmarks found for", self.user_name, "")
+            self.my_bookmark_table.add_row("No Bookmarks found for", self.user_name, "")
         else:
             for entry in self.my_bookmarks_data:
-                my_bookmark_table.add_row(entry[0], entry[1], entry[2])
+                self.my_bookmark_table.add_row(entry[0], entry[1], entry[2])
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield ScrollableContainer(
-            Static(f"Exiasting  Bookmarks, (if any)"),
-            DataTable(id="#bookmarks_table"),
+            Static(f"Existing  Bookmarks, (if any)"),
+            DataTable(id="my_bookmark_table"),
             id="bookmarks_table_container",
         )
         yield Container(
@@ -85,7 +84,9 @@ class MyBookMarksScreen(ModalScreen):
         input_container = self.query_one("#action_bookmark_container", Container)
         input_container.remove_children()
         input_container.mount(Input(placeholder="GUID of the target of the bookmark", id="add_bookmark_guid"))
-        input_container.mount(Button("Add New Bookmark", id="add_new_bookmark", variant="primary"))
+        input_container.mount(Horizontal(
+                Button("Add New Bookmark", id="add_new_bookmark", variant="primary"),
+                Button("Quit", id="quit_add_bookmark", variant="warning")))
 
     @on(Button.Pressed, "#add_new_bookmark")
     def handle_add_new_bookmark(self, event: Button.Pressed) -> None:
@@ -96,7 +97,7 @@ class MyBookMarksScreen(ModalScreen):
             self.notify("You must provide the GUID of the item you want to bookmark before you press the button!",
                         timeout=10,
                         severity="warning")
-        return
+        self.dismiss(200)
 
     def action_remove_bookmark(self) -> None:
         """ The user wants to delete a bookmark"""
@@ -114,4 +115,4 @@ class MyBookMarksScreen(ModalScreen):
             self.notify("You must provide the GUID of the bookmark you want to delete before you press the button!",
                         timeout=10,
                         severity="warning")
-        return
+        self.dismiss(200)
