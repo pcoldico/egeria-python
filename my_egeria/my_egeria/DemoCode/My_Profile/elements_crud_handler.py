@@ -23,7 +23,6 @@ from textual.widgets import DataTable
 from pyegeria import Egeria, PyegeriaException
 
 from EditElementsScreens import (
-    EditProfileScreen,
     EditCollectionsScreen,
     EditCommunitiesScreen,
     EditIdentitiesScreen,

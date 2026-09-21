@@ -104,7 +104,27 @@ class TestMyProfileAppLifecycle:
 
         app = MyProfileApp()
         async with app.run_test() as pilot:
+            # We must wait for the splash screen to be pushed.
+            # Then we dismiss it.
             await pilot.pause()
+            
+            # Use a loop to wait for splash screen if it's not immediately there
+            for _ in range(10):
+                if app.screen.id == "splash":
+                    break
+                await pilot.pause(0.1)
+            
+            if app.screen.id == "splash":
+                app.screen.dismiss(None) # Force dismiss with None to trigger mainline else branch
+                await pilot.pause()
+            
+            # Wait for the async task to finish and the callback to be processed
+            # and the new screen to be pushed.
+            for _ in range(50):
+                if isinstance(app.screen, CreateProfileScreen):
+                    break
+                await pilot.pause(0.1)
+
             assert isinstance(app.screen, CreateProfileScreen)
 
     @pytest.mark.asyncio
