@@ -2359,25 +2359,6 @@
       "level": "Domain",
       "Journal Entry": ""
     },
-    "Dependency Description": {
-      "variable_name": "dependency_description",
-      "inUpdate": true,
-      "attr_labels": "",
-      "examples": "",
-      "default_value": "",
-      "valid_values": [],
-      "existing_element": "",
-      "description": "Description of the dependency between two digital products.",
-      "generated": false,
-      "style": "Simple",
-      "user_specified": true,
-      "unique": false,
-      "input_required": false,
-      "min_cardinality": 0,
-      "max_cardinality": 1,
-      "level": "Domain",
-      "Journal Entry": ""
-    },
     "Digital Product 1": {
       "variable_name": "digital_product_1",
       "inUpdate": true,
@@ -2511,44 +2492,6 @@
       "level": "Domain",
       "Journal Entry": ""
     },
-    "Product Status": {
-      "variable_name": "product_status",
-      "inUpdate": true,
-      "attr_labels": "",
-      "examples": "",
-      "default_value": "",
-      "valid_values": [],
-      "existing_element": "",
-      "description": "Lifecycle status of the digital product.",
-      "generated": false,
-      "style": "Valid Value",
-      "user_specified": true,
-      "unique": false,
-      "input_required": false,
-      "min_cardinality": 0,
-      "max_cardinality": 1,
-      "level": "Domain",
-      "Journal Entry": ""
-    },
-    "Product Type": {
-      "variable_name": "product_type",
-      "inUpdate": true,
-      "attr_labels": "",
-      "examples": "",
-      "default_value": "",
-      "valid_values": [],
-      "existing_element": "",
-      "description": "Type of digital product (e.g., Periodic Delta, On Demand, Snapshot).",
-      "generated": false,
-      "style": "Simple",
-      "user_specified": true,
-      "unique": false,
-      "input_required": false,
-      "min_cardinality": 0,
-      "max_cardinality": 1,
-      "level": "Domain",
-      "Journal Entry": ""
-    },
     "Service Life": {
       "variable_name": "service_life",
       "inUpdate": true,
@@ -2606,25 +2549,6 @@
       "level": "Domain",
       "Journal Entry": ""
     },
-    "Subscription Level": {
-      "variable_name": "subscription_level",
-      "inUpdate": true,
-      "attr_labels": "",
-      "examples": "",
-      "default_value": "",
-      "valid_values": [],
-      "existing_element": "",
-      "description": "Level or tier of the subscription (e.g., basic, premium, enterprise).",
-      "generated": false,
-      "style": "Simple",
-      "user_specified": true,
-      "unique": false,
-      "input_required": false,
-      "min_cardinality": 0,
-      "max_cardinality": 1,
-      "level": "Domain",
-      "Journal Entry": ""
-    },
     "Support Level": {
       "variable_name": "support_level",
       "inUpdate": true,
@@ -2661,6 +2585,25 @@
       "min_cardinality": 0,
       "max_cardinality": 1,
       "level": "Domain",
+      "Journal Entry": ""
+    },
+    "ISC Qualified Name": {
+      "variable_name": "isc_qualified_name",
+      "inUpdate": true,
+      "attr_labels": "",
+      "examples": "",
+      "default_value": "",
+      "valid_values": [],
+      "existing_element": "",
+      "description": "Qualified name of the Information Supply Chain this lineage relationship belongs to, if any.",
+      "generated": false,
+      "style": "Simple",
+      "user_specified": true,
+      "unique": false,
+      "input_required": false,
+      "min_cardinality": 0,
+      "max_cardinality": 1,
+      "level": "Advanced",
       "Journal Entry": ""
     }
   },
@@ -2792,8 +2735,6 @@
         "Maturity",
         "Next Version Date",
         "Product Name",
-        "Product Status",
-        "Product Type",
         "Service Life",
         "Withdrawal Date"
       ]
@@ -2807,7 +2748,6 @@
     "Digital Subscription Base": {
       "inherits": "Agreement Base",
       "own_attributes": [
-        "Subscription Level",
         "Support Level"
       ]
     },
@@ -2843,9 +2783,9 @@
     "Digital Product Dependency": {
       "inherits": "Link Command Base",
       "own_attributes": [
-        "Dependency Description",
         "Digital Product 1",
         "Digital Product 2",
+        "ISC Qualified Name",
         "GUID"
       ]
     }
@@ -2996,11 +2936,7 @@
       "extra_constraints": "",
       "OM_TYPE": "DigitalProductDependency",
       "bundle": "Digital Product Dependency",
-      "custom_attributes": [
-        "Dependency Description",
-        "Digital Product 1",
-        "Digital Product 2"
-      ],
+      "custom_attributes": [],
       "Journal Entry": ""
     },
     "Link Agreement Actor": {

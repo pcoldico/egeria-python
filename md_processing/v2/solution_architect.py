@@ -36,6 +36,7 @@ class BlueprintProcessor(AsyncBaseCommandProcessor):
         journal_entry = attributes.get('Journal Entry', {}).get('value')
 
         comp_guids = set(attributes.get('Solution Components', {}).get('guid_list', []))
+        role_guids = set(attributes.get('Role List', {}).get('guid_list', []))
 
         spec = self.get_command_spec()
         om_type = spec.get("OM_TYPE")
@@ -57,7 +58,13 @@ class BlueprintProcessor(AsyncBaseCommandProcessor):
                 self.add_related_result("Components Sync", message=f"Added {len(sync_res['added'])}, Removed {len(sync_res['removed'])}")
             if sync_res.get("errors"):
                 self.add_related_result("Components Sync", status="failure", message="; ".join(sync_res["errors"]))
-            
+
+            role_sync_res = await self._sync_role_list(guid, role_guids, not merge_update)
+            if role_sync_res.get("added") or role_sync_res.get("removed"):
+                self.add_related_result("Role List Sync", message=f"Added {len(role_sync_res['added'])}, Removed {len(role_sync_res['removed'])}")
+            if role_sync_res.get("errors"):
+                self.add_related_result("Role List Sync", status="failure", message="; ".join(role_sync_res["errors"]))
+
             if journal_entry:
                 try:
                     j_guid = await async_add_note_in_dr_e(self.client, qualified_name, display_name, journal_entry)
@@ -86,6 +93,12 @@ class BlueprintProcessor(AsyncBaseCommandProcessor):
                     self.add_related_result("Components Sync", message=f"Added {len(sync_res['added'])}, Removed {len(sync_res['removed'])}")
                 if sync_res.get("errors"):
                     self.add_related_result("Components Sync", status="failure", message="; ".join(sync_res["errors"]))
+
+                role_sync_res = await self._sync_role_list(guid, role_guids, replace_all=True, known_new=True)
+                if role_sync_res.get("added") or role_sync_res.get("removed"):
+                    self.add_related_result("Role List Sync", message=f"Added {len(role_sync_res['added'])}, Removed {len(role_sync_res['removed'])}")
+                if role_sync_res.get("errors"):
+                    self.add_related_result("Role List Sync", status="failure", message="; ".join(role_sync_res["errors"]))
 
                 if journal_entry:
                     try:
@@ -118,6 +131,32 @@ class BlueprintProcessor(AsyncBaseCommandProcessor):
 
         async def remove_fn(comp_guid):
             await self.client._async_remove_from_collection(guid, comp_guid, None)
+
+        return await self.sync_members(as_is, to_be_guids, add_fn, remove_fn, replace_all)
+
+    async def _sync_role_list(self, guid: str, to_be_guids: Set[str], replace_all: bool, known_new: bool = False) -> Dict[str, Any]:
+        """CollectionMembership sync for 'Role List' -- same shape as the
+        standalone 'Link Actor to Blueprint' command uses (both are plain
+        collection membership; not a bespoke relationship type)."""
+        if known_new:
+            as_is: Set[str] = set()
+        else:
+            bp_element = await self.client._async_get_solution_blueprint_by_guid(guid)
+            as_is = {
+                m['relatedElement']['elementHeader']['guid']
+                for m in bp_element.get('collectionMembers', [])
+                if 'ActorRole' in (
+                    [m.get('relatedElement', {}).get('elementHeader', {}).get('type', {}).get('typeName')]
+                    + (m.get('relatedElement', {}).get('elementHeader', {}).get('type', {}).get('superTypeNames') or [])
+                )
+            }
+
+        async def add_fn(role_guid):
+            body = {"class": "NewRelationshipRequestBody", "properties": {"class": "CollectionMembershipProperties", "membershipRationale": "linked by Dr.Egeria v2"}}
+            await self.client._async_add_to_collection(guid, role_guid, body)
+
+        async def remove_fn(role_guid):
+            await self.client._async_remove_from_collection(guid, role_guid, None)
 
         return await self.sync_members(as_is, to_be_guids, add_fn, remove_fn, replace_all)
 
@@ -248,11 +287,13 @@ class ComponentProcessor(AsyncBaseCommandProcessor):
         rel_els = {} if known_new else await self._get_component_related_elements(guid)
         combined_results = {"added": [], "removed": [], "errors": []}
         
-        # 1. Supply Chains
+        # 1. Supply Chains -- InformationSupplyChain is a Collection subtype, so membership
+        # (not ImplementedBy, which is a design->implementation relationship for a different
+        # purpose) is the correct mechanism: the component is a CollectionMember of the ISC.
         as_is_sc = set(rel_els.get("supply_chain_guids", []))
         res = await self.sync_members(as_is_sc, sc_guids,
-                               lambda sc: self.client._async_link_design_to_implementation(sc, guid, None),
-                               lambda sc: self.client._async_detach_design_from_implementation(sc, guid),
+                               lambda sc: self.client._async_add_to_collection(sc, guid, {"class": "NewRelationshipRequestBody", "properties": {"class": "CollectionMembershipProperties", "membershipRationale": "linked by Dr.Egeria v2"}}),
+                               lambda sc: self.client._async_remove_from_collection(sc, guid, None),
                                replace_all)
         for k in combined_results: combined_results[k].extend(res.get(k, []))
                                
@@ -468,14 +509,19 @@ class SupplyChainProcessor(AsyncBaseCommandProcessor):
                                replace_all)
         for k in combined_results: combined_results[k].extend(res.get(k, []))
 
-        # 3. Implemented By (elements that implement this ISC via ImplementedBy, 0737) --
-        # governance_officer.link/detach_design_to/from_implementation, this ISC is the
-        # design (end 1), the implementer is end 2.
+        # 3. Implemented By -- InformationSupplyChain is a Collection subtype, so membership
+        # (not ImplementedBy -- that's a design->implementation relationship for a different
+        # purpose) is the correct mechanism here too: the implementer is a CollectionMember
+        # of this ISC. Mirrors the fix applied to SolutionComponentProcessor._sync_all_rels'
+        # "1. Supply Chains" sync -- both were using ImplementedBy where CollectionMembership
+        # was correct (2026-09-16, reported live: 71 components each carrying "In Information
+        # Supply Chain" produced 143 ImplementedBy links fanning out from each chain, alongside
+        # the 47 correct CollectionMemberships from explicit Add Member blocks).
         if implemented_by_guids is not None:
             as_is_implemented_by = set(rel_els.get("implemented_by_guids", []))
             res = await self.sync_members(as_is_implemented_by, implemented_by_guids,
-                                   lambda i: self.client.governance_officer._async_link_design_to_implementation(guid, i, None),
-                                   lambda i: self.client.governance_officer._async_detach_design_from_implementation(guid, i, None),
+                                   lambda i: self.client._async_add_to_collection(guid, i, {"class": "NewRelationshipRequestBody", "properties": {"class": "CollectionMembershipProperties", "membershipRationale": "linked by Dr.Egeria v2"}}),
+                                   lambda i: self.client._async_remove_from_collection(guid, i, None),
                                    replace_all)
             for k in combined_results: combined_results[k].extend(res.get(k, []))
 
@@ -500,17 +546,20 @@ class SupplyChainProcessor(AsyncBaseCommandProcessor):
             if related.get('elementHeader', {}).get('type', {}).get('typeName') == 'InformationSupplyChain':
                 res["parent_guids"].append(related['elementHeader']['guid'])
 
-        # Nested (child ISCs that are members of this ISC's collection)
+        # Nested (child ISCs) vs Implemented By (non-ISC members, e.g. components) --
+        # both are now CollectionMembers of this ISC (see the "3. Implemented By" fix
+        # in _sync_rels above), split by whether the member is itself an
+        # InformationSupplyChain. Previously implemented_by_guids was read from a
+        # separate "implementedBy" relationship field (ImplementedBy, 0737) -- now
+        # stale since the sync no longer creates that relationship; collectionMembers
+        # is the correct as-is source for both once membership is the mechanism.
         for element in el_struct.get("collectionMembers", []):
             related = element.get('relatedElement', {})
+            m_guid = related.get('elementHeader', {}).get('guid')
             if related.get('elementHeader', {}).get('type', {}).get('typeName') == 'InformationSupplyChain':
-                res["nested_guids"].append(related['elementHeader']['guid'])
-
-        # Implemented By
-        # Field name confirmed 2026-09-13 against AttributedMetadataElement.java
-        # ("implementedBy", not "implementedByList") and a live element fetch.
-        for element in el_struct.get("implementedBy", []):
-            res["implemented_by_guids"].append(element['relatedElement']['elementHeader']['guid'])
+                res["nested_guids"].append(m_guid)
+            else:
+                res["implemented_by_guids"].append(m_guid)
 
         # Supply To
         for element in el_struct.get("supplyTo", []):
@@ -764,6 +813,7 @@ class SolutionLinkProcessor(AsyncBaseCommandProcessor):
             elif om_type == "CollectionMembership":
                  properties["membershipRationale"] = attributes.get('Membership Rationale', {}).get('value') or description
                  # Additional CollectionMembership properties
+                 properties["membershipType"] = attributes.get('Membership Type', {}).get('value')
                  properties["expression"] = attributes.get('Expression', {}).get('value')
                  properties["membershipStatus"] = attributes.get('Membership Status', {}).get('value', 'ACTIVE').upper()
             elif om_type == "ImplementedBy":

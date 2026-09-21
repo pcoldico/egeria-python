@@ -143,6 +143,66 @@ enough to track there too).
 
 ---
 
+### ISSUE-102: `MemberDataField.minCardinality` silently persists as `maxCardinality`'s value regardless of what's actually sent — server-side, confirmed via a raw request bypassing every pyegeria/Dr.Egeria layer
+
+**Layer:** Egeria Server (repository/relationship-property persistence) · **Status:** open · **Found:** 2026-09-17, live-verifying a Dr.Egeria fix for `Position`/`Minimum Cardinality`/`Maximum Cardinality` on the field↔structure `MemberDataField` relationship (`qs-view-server`/`qs-metadata-store`, versionName `6.2-SNAPSHOT`).
+
+Confirmed with the type system's own definition
+(`ValidMetadataManager._async_get_all_relationship_defs()`, filtered to
+`MemberDataField`) that the three real attributes are `position`,
+`minCardinality`, `maxCardinality` — all plain `int`, `AT_MOST_ONE`
+cardinality, no documented interdependency between `minCardinality` and
+`maxCardinality`.
+
+**Repro (isolated with a raw SDK call — no Dr.Egeria markdown, no pyegeria
+body-construction logic in the path beyond `EgeriaTech.data_designer`):**
+```python
+link_body = {
+    "class": "NewRelationshipRequestBody",
+    "properties": {
+        "class": "MemberDataFieldProperties",
+        "position": 3,
+        "minCardinality": 1,
+        "maxCardinality": 5,
+    },
+}
+await client.data_designer._async_link_member_data_field(struct_guid, field_guid, link_body)
+# fetch the relationship back:
+#   position: 3          -- correct, matches what was sent
+#   minCardinality: 5     -- WRONG, silently coerced to maxCardinality's value (5), not the sent 1
+#   maxCardinality: 5     -- correct
+```
+`position` round-trips correctly, ruling out a client-side body-construction
+bug (the exact same request dict's `position` key is honored, its
+`minCardinality` key is not). No error, warning, or validation failure is
+returned — the create call reports success and returns a real relationship
+GUID; the wrong value is simply what gets stored.
+
+**Also worth flagging separately, lower confidence:** the
+`_async_link_member_data_field` SDK method's own docstring sample body
+(`pyegeria/omvs/data_designer.py` ~line 2286) shows `dataFieldPosition` as
+the position field's name — that's wrong per the same live type-system
+query (the real name is `position`); not filed as its own issue since it's
+a pyegeria-side docstring fix, not an Egeria server issue, but noted here
+since it was found in the same investigation and would otherwise cause a
+second, harder-to-diagnose silent-drop bug for the next person who trusts
+that docstring.
+
+**Ask:** confirm whether `minCardinality` defaulting to `maxCardinality`
+when both are supplied is intentional server-side business logic (e.g. a
+"min cannot exceed max, so raise min to max" normalization applied even
+when min is explicitly below max and both are valid on their own) or a
+genuine persistence bug; if intentional, it isn't reflected anywhere in the
+`MemberDataField` relationship def's own attribute descriptions.
+
+**Dr.Egeria-side impact:** `Create Data Field`'s `Minimum Cardinality`
+attribute is parsed and sent correctly (see `PYEGERIA_ISSUES.md` ISSUE-101)
+but its stored value cannot be trusted independently of `Maximum
+Cardinality` until this is resolved server-side — nothing further is
+fixable in this repo for that specific symptom.
+
+---
+
 ### ISSUE-95: No catalog template registered for the "Apache Kafka Server" technology type — `Create Kafka Server Element` (Asset Maker) fails with a 400 on `qs-view-server`
 
 **Layer:** Egeria Server (deployment/archive content) · **Status:** open, being investigated by the user (2026-09-11) · **Found:** 2026-09-11, live-verifying the new Asset Maker Dr.Egeria family (#354)
@@ -184,7 +244,7 @@ re-prompting the user or caching a password, which is what a bearer token exists
 start and applied when a token is issued; optionally a refresh operation that returns a new token for a
 valid unexpired one. Full draft issue text: trellis session scratch `egeria-issue-token-lifetime.md`.
 
-### ISSUE-90: `qs-engine-host` retries `startMissedEngineActions` forever when one incomplete engine action's anchor is unreadable by the engine-host user
+### ISSUE-90: [fixed?] `qs-engine-host` retries `startMissedEngineActions` forever when one incomplete engine action's anchor is unreadable by the engine-host user
 
 **Layer:** Egeria Server (possibly quickstart content) · **Status:** open · **Found:** 2026-09-04 (trevor fresh quickstart)
 
@@ -223,193 +283,7 @@ security context changes; (2) quickstart content: give `generalnpa` read access 
 elements its engine actions anchor to, or anchor those actions to elements the engine-host identity can
 read. Full draft: trellis session scratch `egeria-issue-engine-host-403-loop.md`.
 
-### ISSUE-93: `declassify_metadata_element` raises `AttributeError` when `body` is omitted, though the parameter is Optional — and the classification is silently left in place
-
-**Layer:** Pyegeria · **Status:** fixed (2026-09-13) · **Found:** 2026-09-08 (Resource Explorer, swapping a Project's kind classification during investigation reclassification).
-
-`MetadataExpert.declassify_metadata_element(metadata_element_guid, classification_name, body=None)`
-declares `body` as `Optional[dict | MetadataSourceRequestBody] = None`, but the
-implementation calls `.model_dump()` on it unconditionally. Omitting it raises:
-
-```
-AttributeError: 'NoneType' object has no attribute 'model_dump'
-```
-
-**Why this is worse than an ordinary signature bug:** the exception arrives from
-deep inside the client, so a caller that wraps the call defensively — which is
-reasonable, since a classification that is already absent should not be fatal —
-swallows it and *believes the classification was removed*. It was not. Measured
-live:
-
-```python
-kinds before: ['Task']
-declassify_metadata_element(guid, "Task")        # raises AttributeError
-kinds after:  ['Task']                            # unchanged
-```
-
-In our case the element then carried **two** kind classifications at once
-(`['Task', 'PersonalProject']`) — the new one added, the old one never removed —
-and a check that only asked "is the new classification present?" reported
-success. The wrong-but-plausible state was invisible until the element was read
-back for *both* names.
-
-**Working around it** — pass an explicit body:
-
-```python
-me.declassify_metadata_element(guid, "Task", {"class": "MetadataSourceRequestBody"})
-# kinds after: []
-```
-
-**Candidate fix:** default the body when `None`, matching the Optional
-declaration — the same shape the workaround passes:
-
-```python
-body = body or {"class": "MetadataSourceRequestBody"}
-```
-
-**Worth checking while in there:** `classify_metadata_element` and
-`reclassify_metadata_element` sit beside it with the same `Optional` body
-declaration. We pass a body to both so we have not hit them, but if they share
-the unconditional `.model_dump()` they have the same defect — and the
-declassify case shows the failure mode is silent at the caller, not loud.
-
-**Where seen:** `trellis/packages/resource-explorer/resource_explorer/surveyors/
-investigation_reclassifier.py::_move_kind_classification`, which now passes the
-body explicitly and additionally verifies that the OLD classification is gone
-rather than only that the new one is present.
-
 ---
-
-### ISSUE-92: `Project Type`'s description in `commands_project_compact.json` lists only 4 of its 6 `valid_values` — omits `Project` and `Experiment`, and the stale text is baked into 24 generated files
-
-**Layer:** Pyegeria · **Status:** fixed (2026-09-13) · **Found:** 2026-09-07 (Resource
-Explorer, designing investigation → Egeria Project classification mapping).
-
-`md_processing/data/compact_commands/commands_project_compact.json`, the
-`Project Type` attribute (`variable_name: project_type`):
-
-```json
-"valid_values": [
-  "Project", "Campaign", "Task", "PersonalProject", "StudyProject", "Experiment"
-],
-"description": "A string classifying the project. Supported values are Campaign, Task, PersonalProject and StudyProject."
-```
-
-`valid_values` has six entries; the description names four. `Project` (which
-is also this attribute's own `default_value`) and `Experiment` are both
-missing from the prose. The machine-readable list is correct — it matches
-Egeria 6's actual Project classifications in
-`OpenMetadataType.java` (0130): `CAMPAIGN_CLASSIFICATION`,
-`TASK_CLASSIFICATION`, `PERSONAL_PROJECT_CLASSIFICATION`,
-`STUDY_PROJECT_CLASSIFICATION`, `EXPERIMENT_CLASSIFICATION`. Only the
-description is behind.
-
-**Why it matters more than one stale string:** the description is what
-`gen_md_cmd_templates` and `gen_dr_help` render, so it has propagated. In
-this checkout, 25 files in the main tree carry the sentence verbatim — the
-one source JSON plus 24 generated artifacts:
-
-```
-md_processing/data/compact_commands/commands_project_compact.json   <- source
-md_processing/data/compact_commands_backup/commands_project_compact.json
-sample-data/templates/{basic,advanced}/Projects/*.md                (16)
-sample-data/egeria-inbox/dr-egeria-help-*.md                         (7)
-```
-
-The sharpest symptom: **`sample-data/templates/{basic,advanced}/Projects/Create_Experiment.md`
-tells the reader that `Experiment` is not a supported value** — on the
-template whose entire purpose is to create one. `Create_Project.md` has the
-same problem for `Project`. The generated help tables are self-contradictory
-in a single row, because they print the prose and the `valid_values` list
-side by side:
-
-```
-... Supported values are Campaign, Task, PersonalProject and StudyProject. | False | Project, Campaign, Task, PersonalProject, StudyProject, Experiment | Domain |
-```
-
-A reader who trusts the sentence over the column will never reach for
-`Experiment`, which is the one classification carrying its own defining
-attribute (`hypothesis`), so the omission suppresses a real capability
-rather than just reading untidily.
-
-**Where seen:** found while mapping Resource Explorer's investigation
-`project_classification` onto Egeria's Project classifications — the
-description was the first thing read, and it made `Experiment` look
-unsupported until `valid_values` and the Egeria type source were checked.
-
-**Candidate fix (one string, then regenerate):** edit the `description` in
-`commands_project_compact.json` to cover all six, ideally naming what each
-means rather than just listing them again — the `valid_values` array
-already lists them, so prose that only repeats the list adds nothing and
-will drift again the next time a value is added. Suggested:
-
-> "A string classifying the project. `Project` (the default) applies no
-> classification. `Campaign` is a long-term strategic initiative delivered
-> through multiple projects; `Task` a self-contained short activity;
-> `PersonalProject` an informal project an individual creates to organize
-> their own work; `StudyProject` a focused analysis of a topic, person,
-> object or situation; `Experiment` a project testing a hypothesis, which
-> is recorded in the `hypothesis` attribute."
-
-(Wording taken from the Egeria type definitions themselves so the two
-cannot disagree.)
-
-Then re-run `refresh_specs`, `gen_md_cmd_templates` and `gen_dr_help` per
-the Dr.Egeria command-sync flow and propagate the regenerated templates/help
-to `egeria-workspaces` and `egeria-advisor` — the 24 generated files above
-will not update on their own, and 16 of them ship as user-facing templates.
-
-**Worth checking while in there:** whether any other compact-command
-attribute has a `description` that enumerates its `valid_values` in prose.
-Any such pair is the same latent defect — two lists that must be edited
-together with nothing enforcing it. A cheap guard would be a spec-validation
-check that flags a `description` naming a subset of its own `valid_values`.
-
----
-
-### ISSUE-91: `pyegeria.core.mcp_server` imports `mcp.server.mcpserver` (mcp 2.x only) but `pyproject.toml` declares `mcp >=0.1` — any consumer that resolves mcp 1.x gets a server that dies at import
-
-**Layer:** pyegeria packaging · **Status:** fixed (2026-09-13) · **Found:** 2026-09-05 (Egeria Advisor dev startup on the M3 Max)
-
-Commit 2b39ba06 (2026-07-30, "migrate mcp_server.py to mcp 2.0.0's MCPServer") changed the
-server's import to:
-
-```python
-from mcp.server.mcpserver import MCPServer
-```
-
-That module exists only in `mcp >= 2.0.0` (1.x ships `mcp.server.fastmcp` instead). The
-dependency declaration was not updated and still reads `"mcp >=0.1"` — verified in the released
-6.1.5 wheel's METADATA (`Requires-Dist: mcp>=0.1`) and in the current `pyproject.toml` at 6.1.10.
-
-**How it shows up.** trellis pinned `mcp>=1.0.0` and its lock resolved mcp 1.29.0, which satisfies
-pyegeria's declared range. Launching the server then fails before it can speak MCP:
-
-```
-$ python -m pyegeria.core.mcp_server
-MCP import failed.
-  File ".../pyegeria/core/mcp_server.py", line 24, in <module>
-    from mcp.server.mcpserver import MCPServer
-ModuleNotFoundError: No module named 'mcp.server.mcpserver'
-```
-
-A client sees only "No response from MCP server" because the traceback goes to stderr and the
-process exits without writing a JSON-RPC frame. With mcp 2.1.1 installed the same command answers
-`initialize` normally (`serverInfo.name = "pyegeria-mcp"`).
-
-**Why it went unnoticed.** The quickstart containers run mcp 2.1.1 (pyegeria 6.1.9) and use their own
-`/app/mcp_server.py` mounted over SSE in `pyegeria_handler`, not this stdio module, so the
-egeria-workspaces path never exercised it. The egeria-python checkout's own venv also has mcp 2.0.0.
-
-**Proposed fix (backward compatible for callers).** In `pyproject.toml` declare `"mcp >=2.0"`. Nothing
-else needs to change: the import is already 2.x-only, so raising the floor only turns a runtime
-import crash into a resolver error at install time. If 1.x support is wanted instead, gate the
-import (`try: from mcp.server.mcpserver import MCPServer except ImportError: from mcp.server.fastmcp
-import FastMCP as MCPServer`) — but the 2.x API differs beyond the class name, so the floor bump is
-the honest option.
-
-**Consumer-side workaround applied in trellis (8441efb):** both packages now declare `mcp>=2.0.0`
-and the lock carries mcp 2.1.1, matching the quickstart containers.
 
 ### ISSUE-38 (PY-18): `count_relationships_between_elements("Exception")` (276) disagrees with `ClassificationExplorer.get_relationships("Exception")` (55)
 
@@ -956,12 +830,439 @@ they're holding real port materialization until this exists server-side
 
 ---
 
+### ISSUE-108: newly created relationships stay invisible to related-element queries for up to ~20 minutes after creation
+
+**Layer:** Egeria Server · **Status:** open · **Found:** 2026-09-20, reported by
+the user from a Dr.Egeria bulk load session (1,027 expected field-link
+relationships).
+
+**What:** a catalog walk run immediately after a load found only 876 of 1,027
+expected field links. A second walk 12 minutes later still showed 82
+structures short. A third walk, 20 minutes after the load, showed every link
+present. No errors were raised at any point in the load itself — the
+relationships were created successfully, they simply did not show up in
+related-element queries for a long window afterward, then all became visible
+at once with no further action taken.
+
+**Not yet root-caused.** This looks like the same family of symptom as the
+2026-08-15 Postgres-checkpoint/background-connector-load entry above (server
+falling behind under load, catching up later) rather than a paging defect
+like ISSUE-54 (which would not self-heal purely by waiting — ISSUE-54's
+bug is about tie-ordering across separately-executed pages, not about data
+not existing yet). But this has not been directly correlated with connector
+log activity or checkpoint timing the way that entry was — this is a fresh
+report, not yet independently reproduced or diagnosed by a pyegeria session.
+
+**Impact:** any workflow that verifies a bulk write immediately after
+issuing it (a post-load catalog walk, an integration test, an automated
+Dr.Egeria "did it work" check) can get a false-negative "missing" result
+that resolves itself given enough time — worth knowing before treating an
+immediate post-write verification gap as evidence of a real data-loss bug.
+
+**Candidate next step (not yet done):** reproduce with a smaller, timed
+sample (e.g. create N relationships, poll related-element queries at 1-minute
+intervals, log when each becomes visible) to get a real latency
+distribution instead of the three anecdotal checkpoints here, and check
+whether it correlates with the same background-connector/checkpoint load
+already documented above. Worth raising with the Egeria team directly, per
+the original report.
+
+**Update 2026-09-20 (peer check, no upstream issue filed yet):** checked
+`odpi/egeria`'s issue tracker directly — nothing filed for this symptom, so
+no response from the Egeria team via GitHub. Asked three peer sessions
+working against the same dev Egeria server:
+- **egeria-workspaces-fs-4a:** hasn't seen this specific symptom, no word
+  from the Egeria team either. Raised a speculative, explicitly-unconfirmed
+  lead worth checking: a chronic, still-open issue on `egeria-shared-kafka`
+  where the `GroupCoordinator` repeatedly times out writing to
+  `__consumer_offsets` (5000ms) and triggers a consumer-group rebalance
+  roughly every 90s (confirmed via broker logs 2026-09-03; root cause still
+  open, CPU/GC/Postgres-restarts/virtiofs I/O already ruled out; historically
+  "Information" severity, self-heals within seconds, not chased further
+  since it wasn't visibly causing downstream harm). If `qs-view-server`'s
+  related-element queries are backed by Kafka-driven indexing/event
+  propagation rather than a direct repository read, a chronic rebalance
+  storm could plausibly manifest as exactly this "relationship exists but
+  isn't visible to queries yet" lag. **Explicitly not a confirmed
+  correlation** — the timescales don't obviously line up (a recurring ~90s
+  self-healing blip vs. a one-shot ~20-minute resolution) — and the peer
+  offered to check Kafka broker logs around the original bulk-load window
+  for the same rebalance pattern if useful.
+- **Resource Explorer experimental UI:** no direct evidence either way —
+  today's two live writes against the same server (a Governance Action
+  Process Step upsert, and a native-survey `SurveyReport` lookup) both
+  checked either *immediately* after the write or only *after* polling to a
+  terminal status, never in the 1-20 minute gap this entry describes, so
+  neither confirms nor rules it out. Flagged that a background agent on
+  their side doing a related connection-refresh fix will trigger fresh
+  engine actions/relationships shortly and will report back if it surfaces
+  the same lag.
+- **Egeria-trellis backlog review:** also nothing from the Egeria team (no
+  channel to them; checked RE docs/Backlog/design notes for this exact
+  shape first — a checked "no", not a guess). Offered a different, measured
+  precedent on this same platform as a *pattern* to distinguish causes, not
+  a diagnosis: `packages/resource-explorer/docs/investigation-classification-and-zoning-design.md`
+  (~line 830) documents a privately-zoned element still readable by a
+  non-owner *six minutes* after the control was written (denial began at
+  seven), caused by the security connector's `refreshTimeInterval` (10 min)
+  reload — "read it back immediately, so it must be fine" was exactly the
+  misleading evidence there too. Their key diagnostic point: a
+  **fixed-wall-clock cause** (everything becomes visible at once, at a time
+  unrelated to load size — test with 50 links instead of 1,027 and see if
+  the delay is still ~20 min) and a **volume-proportional cause** (async
+  indexing/event-driven materialisation catching up, arriving in a stream)
+  look identical from a single observation but have different fixes; the
+  876→945(implied)→1,027 partial-recovery-at-12-minutes data point *mildly*
+  favours volume-proportional, but "two points don't make a curve." Also
+  worth checking directly: fetch one of the missing links by its own GUID
+  during the window — if that resolves but the relationship is still absent
+  from the related-element query, the write landed fine and only the
+  traversal/index path lags, narrowing which service is actually behind. If
+  this gets filed upstream, the volume-vs-fixed measurement is what turns
+  it into a real bug report instead of getting bounced as "eventual
+  consistency, working as intended."
+
+Two independent, unconfirmed leads now on record (Kafka rebalance storms;
+a refresh-interval-style cache) alongside a concrete diagnostic method
+(fixed-wall-clock vs. volume-proportional, plus the direct-GUID-fetch
+isolation check) for telling them apart before assuming either. Next real
+step is still reproducing with a smaller, timed, instrumented load using
+that method — not yet done.
+
+**Reproduction attempt, 2026-09-20 (small end of the curve, not reproduced):**
+after clearing with all 5 live peer sessions first (per `coordinate-shared-writes`),
+ran a timed, instrumented small-scale reproduction against `qs-view-server`:
+20 throwaway `Collection` elements created and each linked to a parent via
+`CollectionMembership` (not the original `MemberDataField`/"field link" type
+— a different relationship type, noted as a limitation below), polling
+`get_collection_members` every 30s for up to 20 minutes, with a direct-GUID
+isolation check ready for anything still missing at the deadline.
+
+**Result: all 20 relationships were visible on the very first poll, ~1.1s
+after the last one was created — no lag at all.** Cleanup (delete all 21
+fixture elements) verified two independent ways: a direct-GUID fetch on
+each (`404`/`OMAG-REPOSITORY-HANDLER-404-007`, confirmed real soft-delete,
+not an ISSUE-63-style silent no-op) and a broad `find_collections` search
+for the `test-fixture-issue108` prefix (0 results). The script itself was
+run from an ephemeral per-session scratch directory, not committed anywhere
+— reproduce via the same approach (create N Collections linked to a parent
+via `_async_add_to_collection`, poll `_async_get_collection_members`) if
+needed later; the approach, not the script file, is what's worth keeping.
+
+**Per Egeria-trellis backlog review's own framework, this is one point on
+the curve, not a refutation.** It's consistent with either "no bug under
+current load" or "the lag is genuinely volume-proportional and 20 elements
+is nowhere near the ~1,027-link scale that surfaced it originally" — the
+one data point this run *can't* distinguish those two. Also a real
+methodology gap versus the original report: this used `CollectionMembership`
+on plain `Collection` elements, not the `MemberDataField` "field link"
+relationship the original 1,027-link load actually exercised (ISSUE-102 is
+in the same `MemberDataField` neighborhood, worth checking together). Server
+load conditions also weren't recorded this run (no `ListAgents`/`:8810`
+snapshot taken alongside the timings, despite the earlier plan to do so —
+an execution gap, not a design one).
+
+**Candidate next step, still open:** a same-relationship-type
+(`MemberDataField`), same-order-of-magnitude (~200+) run, following the
+same peer-clearance and independent-verification discipline, is what would
+actually test the volume-proportional hypothesis — this run didn't attempt
+that scale on its own initiative, since committing to it wasn't part of
+what peers were asked to clear.
+
+---
+
 ## Open pyegeria items (including follow-ons blocked on an Egeria fix)
 
 Actionable in this repo. Some of these are fully blocked today — waiting
 on an Egeria Server capability that doesn't exist yet — but the pyegeria/
 Dr.Egeria-side work each will need once that capability ships is written
 into the entry now, so it isn't rediscovered from scratch later.
+
+**Empty as of 2026-09-20's housekeeping pass** — every entry that had been
+sitting here was already `fixed`; see the "Housekeeping, 2026-09-20" note
+at the top of "Fixed / Resolved" below for where they went.
+
+---
+
+# Quick reference: which OMVS client class for which purpose
+
+| Need | Class | Notes |
+|---|---|---|
+| Business reference data (country/currency codes) | `ReferenceDataManager` | Does **not** cover specification properties (ISSUE-19, docs-only) |
+| Valid metadata values for a property name | `ReferenceDataManager` or `MetadataExpert` | `get_valid_metadata_values` lives on shared `ServerClient` base; no `as_of_time` support — Egeria endpoint doesn't expose it (ISSUE-18) |
+| Specification properties (placeholders, guards, action targets, etc.) | `SpecificationProperties` | `get_specification_property_by_type` now works with either PascalCase or `SCREAMING_SNAKE_CASE` input (ISSUE-17, fixed 2026-08-15); `find_specification_property` with `graph_query_depth=0` also available (ISSUE-15); `get_specification_property_by_guid` works too, `NameError` fixed (ISSUE-28, fixed 2026-08-05, re-verified 2026-08-15) |
+| `DataGrain` / `DataClass` listing | `find_data_value_specifications` / `get_data_value_specifications_by_name("*")` | Both fixed (ISSUE-1, ISSUE-2) |
+| `DataSpec` (Collection subtype) | `CollectionManager.find_collections(metadata_element_type="DataSpec")` | |
+| `DataStructure` / `DataField` | `DataDesigner.find_data_structures` / `find_data_fields` | |
+| Solution blueprints/components (any pyegeria version) | `SolutionArchitect.find_solution_blueprints/components(search_string="*")` | Avoid `find_all_*` variants on old versions (ISSUE-11) |
+| Note logs (list) | `find_note_logs("*", graph_query_depth=0)` | ISSUE-15 |
+| Note logs (entries) | `get_notes_for_note_log(guid, page_size=100)` | ISSUE-3 — never pass `metadata_element_type_name="NoteLog"` |
+| Collection members | `get_collection_members(collection_guid)` | ISSUE-8 — now returns members of any type, not just the collection's own type |
+| Comparing results across two runs/environments that don't match | — | Check whether the same user's credentials were used in both — governance zone visibility can legitimately change results per-user (ISSUE-29) before assuming a pyegeria bug |
+| Multi-classification search (`matchClassifications`, 2+ conditions) | `MetadataExpert.find_metadata_elements` | Fixed in Egeria server (ISSUE-35) |
+| Paging a `find_metadata_elements` result | Set `"startFrom"`/`"pageSize"` **in the body dict** | Fixed (ISSUE-34) — these are NOT separate parameters on this method anymore; passing them as kwargs is silently a no-op. Same for `"graphQueryDepth"`. |
+| Relationships for a single element by guid | `MetadataExpert.get_all_related_elements(guid)` | **Not** `get_metadata_element_by_guid` — that call never returns relationships, by design (ISSUE-37, not a bug) |
+| Project parent/child hierarchy (any linked project, not just hierarchy) | `ProjectManager.get_linked_projects(guid)` | Fixed (ISSUE-42) — was silently returning "No elements found" regardless of real data |
+
+---
+
+
+---
+
+# Appendix: Closed / Not-a-bug entries
+
+## Fixed / Resolved
+
+**Housekeeping, 2026-09-20:** the 14 entries below were moved here from
+"Open Egeria Server issues" and "Open pyegeria items" -- all were already
+marked `fixed` (or, for one duplicate ISSUE-91 report, corrected to `fixed`
+here) but had never been relocated out of the open sections. No content was
+changed beyond that one status correction and this note.
+
+---
+
+### ISSUE-109: `Link Product Dependency` was missing `ISC Qualified Name` — an earlier fix wrongly confirmed it as "correctly absent" against a stale local `.http` copy
+
+**Layer:** Pyegeria · **Status:** fixed 2026-09-21 · **Found:** 2026-09-20
+(user, reviewing a template fix), confirmed as a real gap 2026-09-21 after
+Mandy Chessell (Egeria team) questioned the earlier "not a bug" conclusion
+directly.
+
+**What happened, in order — worth recording because the failure mode is
+the interesting part, not just the fix:**
+1. 2026-09-20: fixing a duplicate `Dependency Description` attribute on
+   `Link Product Dependency`, the user separately asked why the template
+   had no `ISC Qualified Name` field. Checked the ground truth this repo's
+   own docs point to — `pyegeria/http clients/Egeria-api-product-manager.http`
+   — which showed `DigitalProductDependencyProperties` with only `label`/
+   `description`/`effectiveFrom`/`effectiveTo`. Concluded, and documented in
+   PR #376, that the field was **correctly absent** — not a bug.
+2. 2026-09-21: Mandy Chessell approved that PR's template change but asked
+   directly whether `ISC Qualified Name` was still unmapped. Re-checked
+   against the **current upstream `odpi/egeria` source** (not the local
+   `.http` copy) via `gh search code` +
+   `raw.githubusercontent.com/odpi/egeria/main/...`:
+   `DigitalProductDependencyProperties` now `extends LineageRelationshipProperties`
+   (which declares `iscQualifiedName`) rather than being a flat class with
+   only `label`/`description` — a real, upstream shape change the local
+   `.http` file predates. **The field genuinely exists server-side; the
+   original "not a bug" conclusion was wrong**, not because the reasoning
+   was bad, but because the ground truth it was checked against was stale.
+
+**Lesson:** this repo's own `.http` clients directory
+(`pyegeria/http clients/`) is explicitly gitignored and user-managed —
+nothing keeps it in sync with upstream automatically, and there is no
+signal when it goes stale. When a domain expert questions a "confirmed not
+a bug" conclusion, that is exactly the moment to re-check against
+`raw.githubusercontent.com/odpi/egeria/main/...` directly rather than
+re-trusting the same local copy that produced the wrong answer.
+
+**Fixed:** added `ISC Qualified Name` (`isc_qualified_name`, level
+`Advanced`) to the `Digital Product Dependency` bundle, copying the
+identical, pre-existing attribute definition from the Lineage Linker family
+rather than reinventing it (same name is already global-namespace-shared
+across compact JSON files — see the "Compact Attribute/Bundle Global
+Namespace" convention). Wired `iscQualifiedName` into the
+`DigitalProductDependencyProperties` body in
+`collection_manager_processor.py`'s `"Product Dependency"` branch.
+Regenerated templates confirm it now appears in the Advanced template only
+(matching its declared level — correctly absent from Basic). Covered by a
+new test,
+`test_link_product_dependency_sends_isc_qualified_name` in
+`tests/micro-tests/test_collection_link_multilink_guid.py`. Full
+`tests/micro-tests/` suite re-verified green.
+
+---
+
+### ISSUE-93: `declassify_metadata_element` raises `AttributeError` when `body` is omitted, though the parameter is Optional — and the classification is silently left in place
+
+**Layer:** Pyegeria · **Status:** fixed (2026-09-13) · **Found:** 2026-09-08 (Resource Explorer, swapping a Project's kind classification during investigation reclassification).
+
+`MetadataExpert.declassify_metadata_element(metadata_element_guid, classification_name, body=None)`
+declares `body` as `Optional[dict | MetadataSourceRequestBody] = None`, but the
+implementation calls `.model_dump()` on it unconditionally. Omitting it raises:
+
+```
+AttributeError: 'NoneType' object has no attribute 'model_dump'
+```
+
+**Why this is worse than an ordinary signature bug:** the exception arrives from
+deep inside the client, so a caller that wraps the call defensively — which is
+reasonable, since a classification that is already absent should not be fatal —
+swallows it and *believes the classification was removed*. It was not. Measured
+live:
+
+```python
+kinds before: ['Task']
+declassify_metadata_element(guid, "Task")        # raises AttributeError
+kinds after:  ['Task']                            # unchanged
+```
+
+In our case the element then carried **two** kind classifications at once
+(`['Task', 'PersonalProject']`) — the new one added, the old one never removed —
+and a check that only asked "is the new classification present?" reported
+success. The wrong-but-plausible state was invisible until the element was read
+back for *both* names.
+
+**Working around it** — pass an explicit body:
+
+```python
+me.declassify_metadata_element(guid, "Task", {"class": "MetadataSourceRequestBody"})
+# kinds after: []
+```
+
+**Candidate fix:** default the body when `None`, matching the Optional
+declaration — the same shape the workaround passes:
+
+```python
+body = body or {"class": "MetadataSourceRequestBody"}
+```
+
+**Worth checking while in there:** `classify_metadata_element` and
+`reclassify_metadata_element` sit beside it with the same `Optional` body
+declaration. We pass a body to both so we have not hit them, but if they share
+the unconditional `.model_dump()` they have the same defect — and the
+declassify case shows the failure mode is silent at the caller, not loud.
+
+**Where seen:** `trellis/packages/resource-explorer/resource_explorer/surveyors/
+investigation_reclassifier.py::_move_kind_classification`, which now passes the
+body explicitly and additionally verifies that the OLD classification is gone
+rather than only that the new one is present.
+
+---
+
+### ISSUE-92: `Project Type`'s description in `commands_project_compact.json` lists only 4 of its 6 `valid_values` — omits `Project` and `Experiment`, and the stale text is baked into 24 generated files
+
+**Layer:** Pyegeria · **Status:** fixed (2026-09-13) · **Found:** 2026-09-07 (Resource
+Explorer, designing investigation → Egeria Project classification mapping).
+
+`md_processing/data/compact_commands/commands_project_compact.json`, the
+`Project Type` attribute (`variable_name: project_type`):
+
+```json
+"valid_values": [
+  "Project", "Campaign", "Task", "PersonalProject", "StudyProject", "Experiment"
+],
+"description": "A string classifying the project. Supported values are Campaign, Task, PersonalProject and StudyProject."
+```
+
+`valid_values` has six entries; the description names four. `Project` (which
+is also this attribute's own `default_value`) and `Experiment` are both
+missing from the prose. The machine-readable list is correct — it matches
+Egeria 6's actual Project classifications in
+`OpenMetadataType.java` (0130): `CAMPAIGN_CLASSIFICATION`,
+`TASK_CLASSIFICATION`, `PERSONAL_PROJECT_CLASSIFICATION`,
+`STUDY_PROJECT_CLASSIFICATION`, `EXPERIMENT_CLASSIFICATION`. Only the
+description is behind.
+
+**Why it matters more than one stale string:** the description is what
+`gen_md_cmd_templates` and `gen_dr_help` render, so it has propagated. In
+this checkout, 25 files in the main tree carry the sentence verbatim — the
+one source JSON plus 24 generated artifacts:
+
+```
+md_processing/data/compact_commands/commands_project_compact.json   <- source
+md_processing/data/compact_commands_backup/commands_project_compact.json
+sample-data/templates/{basic,advanced}/Projects/*.md                (16)
+sample-data/egeria-inbox/dr-egeria-help-*.md                         (7)
+```
+
+The sharpest symptom: **`sample-data/templates/{basic,advanced}/Projects/Create_Experiment.md`
+tells the reader that `Experiment` is not a supported value** — on the
+template whose entire purpose is to create one. `Create_Project.md` has the
+same problem for `Project`. The generated help tables are self-contradictory
+in a single row, because they print the prose and the `valid_values` list
+side by side:
+
+```
+... Supported values are Campaign, Task, PersonalProject and StudyProject. | False | Project, Campaign, Task, PersonalProject, StudyProject, Experiment | Domain |
+```
+
+A reader who trusts the sentence over the column will never reach for
+`Experiment`, which is the one classification carrying its own defining
+attribute (`hypothesis`), so the omission suppresses a real capability
+rather than just reading untidily.
+
+**Where seen:** found while mapping Resource Explorer's investigation
+`project_classification` onto Egeria's Project classifications — the
+description was the first thing read, and it made `Experiment` look
+unsupported until `valid_values` and the Egeria type source were checked.
+
+**Candidate fix (one string, then regenerate):** edit the `description` in
+`commands_project_compact.json` to cover all six, ideally naming what each
+means rather than just listing them again — the `valid_values` array
+already lists them, so prose that only repeats the list adds nothing and
+will drift again the next time a value is added. Suggested:
+
+> "A string classifying the project. `Project` (the default) applies no
+> classification. `Campaign` is a long-term strategic initiative delivered
+> through multiple projects; `Task` a self-contained short activity;
+> `PersonalProject` an informal project an individual creates to organize
+> their own work; `StudyProject` a focused analysis of a topic, person,
+> object or situation; `Experiment` a project testing a hypothesis, which
+> is recorded in the `hypothesis` attribute."
+
+(Wording taken from the Egeria type definitions themselves so the two
+cannot disagree.)
+
+Then re-run `refresh_specs`, `gen_md_cmd_templates` and `gen_dr_help` per
+the Dr.Egeria command-sync flow and propagate the regenerated templates/help
+to `egeria-workspaces` and `egeria-advisor` — the 24 generated files above
+will not update on their own, and 16 of them ship as user-facing templates.
+
+**Worth checking while in there:** whether any other compact-command
+attribute has a `description` that enumerates its `valid_values` in prose.
+Any such pair is the same latent defect — two lists that must be edited
+together with nothing enforcing it. A cheap guard would be a spec-validation
+check that flags a `description` naming a subset of its own `valid_values`.
+
+---
+
+### ISSUE-91: `pyegeria.core.mcp_server` imports `mcp.server.mcpserver` (mcp 2.x only) but `pyproject.toml` declares `mcp >=0.1` — any consumer that resolves mcp 1.x gets a server that dies at import
+
+**Layer:** pyegeria packaging · **Status:** fixed (2026-09-13) · **Found:** 2026-09-05 (Egeria Advisor dev startup on the M3 Max)
+
+Commit 2b39ba06 (2026-07-30, "migrate mcp_server.py to mcp 2.0.0's MCPServer") changed the
+server's import to:
+
+```python
+from mcp.server.mcpserver import MCPServer
+```
+
+That module exists only in `mcp >= 2.0.0` (1.x ships `mcp.server.fastmcp` instead). The
+dependency declaration was not updated and still reads `"mcp >=0.1"` — verified in the released
+6.1.5 wheel's METADATA (`Requires-Dist: mcp>=0.1`) and in the current `pyproject.toml` at 6.1.10.
+
+**How it shows up.** trellis pinned `mcp>=1.0.0` and its lock resolved mcp 1.29.0, which satisfies
+pyegeria's declared range. Launching the server then fails before it can speak MCP:
+
+```
+$ python -m pyegeria.core.mcp_server
+MCP import failed.
+  File ".../pyegeria/core/mcp_server.py", line 24, in <module>
+    from mcp.server.mcpserver import MCPServer
+ModuleNotFoundError: No module named 'mcp.server.mcpserver'
+```
+
+A client sees only "No response from MCP server" because the traceback goes to stderr and the
+process exits without writing a JSON-RPC frame. With mcp 2.1.1 installed the same command answers
+`initialize` normally (`serverInfo.name = "pyegeria-mcp"`).
+
+**Why it went unnoticed.** The quickstart containers run mcp 2.1.1 (pyegeria 6.1.9) and use their own
+`/app/mcp_server.py` mounted over SSE in `pyegeria_handler`, not this stdio module, so the
+egeria-workspaces path never exercised it. The egeria-python checkout's own venv also has mcp 2.0.0.
+
+**Proposed fix (backward compatible for callers).** In `pyproject.toml` declare `"mcp >=2.0"`. Nothing
+else needs to change: the import is already 2.x-only, so raising the floor only turns a runtime
+import crash into a resolver error at install time. If 1.x support is wanted instead, gate the
+import (`try: from mcp.server.mcpserver import MCPServer except ImportError: from mcp.server.fastmcp
+import FastMCP as MCPServer`) — but the 2.x API differs beyond the class name, so the floor bump is
+the honest option.
+
+**Consumer-side workaround applied in trellis (8441efb):** both packages now declare `mcp>=2.0.0`
+and the lock carries mcp 2.1.1, matching the quickstart containers.
+
+---
 
 ### ISSUE-96: get_guid_for_name (and every other sync wrapper using asyncio.get_event_loop().run_until_complete(...)) breaks when a client instance is reused across threads — surfaces as a misleading CLIENT_ERROR_400 "unable to connect"
 
@@ -1028,9 +1329,11 @@ already used internally in mcp_server.py.
 
 Suggested fix (pyegeria): either make each sync wrapper use a per-thread session/loop (e.g. `threading.local()` holding the httpx.AsyncClient), or document that a client instance is single-thread-affine and raise a clear error — rather than the broad `except` in `_async_make_request` relabelling `RuntimeError: ... bound to a different event loop` as CLIENT_ERROR_400 'unable to connect', which is what cost the diagnosis. Caller-side mitigation used in Resource Explorer (dwolfson/trellis, `re/question-guid-client-per-thread`): one client per thread, constructed inside the thread that uses it — 0/104 failures after, 52/52 before.
 
+---
+
 ### ISSUE-91: `pyproject.toml` declares `mcp >=0.1`, but `pyegeria.core.mcp_server` needs `mcp>=2.0` — the declared floor lets a resolver install a version too old to import the module at all
 
-**Layer:** Pyegeria · **Status:** open · **Found:** 2026-09-06 (Egeria Advisor, containerized demo deployment rebuild against pyegeria 6.1.10).
+**Layer:** Pyegeria · **Status:** fixed (2026-09-13) -- duplicate report of the ISSUE-91 entry above (same number, same root cause, found a day later from a different angle: containerized demo deployment rather than dev startup). Confirmed current `pyproject.toml` declares `"mcp >=2.1.1"` · **Found:** 2026-09-06 (Egeria Advisor, containerized demo deployment rebuild against pyegeria 6.1.10).
 
 `pyproject.toml`'s `[project.dependencies]` declares `"mcp >=0.1"`, but
 `pyegeria/core/mcp_server.py` imports `from mcp.server.mcpserver import
@@ -1058,6 +1361,8 @@ independently verified against the `mcp` package's own changelog/git
 history here — the live import check above shows 2.0.0 works and the
 module path is absent from the 0.x/1.x line by inspection, but the exact
 first-working version wasn't pinned down.
+
+---
 
 ### ISSUE-87: `ClassificationExplorer.add_ownership_to_element`'s docstring sample body says `"class": "OwnerProperties"` — the method itself only accepts `"OwnershipProperties"`, so the documented body cannot be sent
 
@@ -1111,6 +1416,8 @@ here, so this is unlikely to be the only one. Separately, the validation error
 would be far more useful if it named the expected and supplied class names;
 `{"reason": "unexpected property class name"}` is a hard error to act on.
 
+---
+
 ### ISSUE-86: `exec_report_spec` (and `_exec_analytic_chart`, `_run_report_spec`) accept only `user`/`user_pass` — no way to run a report with a bearer token the caller already holds
 
 **Layer:** Pyegeria · **Status:** fixed 2026-09-05 (Pyegeria —
@@ -1160,6 +1467,8 @@ person who ran the report (`advisor/report_pipeline.py`, search "ISSUE-86").
 and thread it to the two builders; when given, `set_bearer_token(token)` instead of
 `create_egeria_bearer_token()`. Same for `run_report`/`describe_report` on the MCP side if they share
 the builder. Backward compatible: `user`/`user_pass` keep working when no token is given.
+
+---
 
 ### ISSUE-84: `SolutionArchitect.create_solution_blueprint`'s own docstring documents a `NewSolutionElementRequestBody` body (with `initialStatus`) for Draft-status creation — that class does not exist as a pydantic model, so the documented shape fails client-side validation before any HTTP call
 
@@ -1334,6 +1643,8 @@ platform after the wipe. The finding (`contentStatus` round-trips via `propertie
 separate request-body class needed) is a property of the API/fix, not of that instance, and
 is unaffected.
 
+---
+
 ### ISSUE-82: `pyegeria/omvs/valid_metadata.py` sends the literal query string `typeName=None` whenever `type_name` is Python `None` — breaks every Type-Name-omitted (global) Valid Metadata Value, in 12 of 14 methods across `ValidMetadataManager`
 
 **Status:** fixed and live-verified 2026-08-28 — all 12 affected methods
@@ -1446,6 +1757,8 @@ if type_name:
 **Nothing left open here.** Fixed, released (pyegeria 6.1.7), and live-verified
 end-to-end against the original real-world repro, not just unit-tested.
 
+---
+
 ### ISSUE-83: `AutomatedCuration.get_technology_type_elements(get_templates=True)` sends `skipClassifiedElements: [""]` (a list containing an empty string) instead of `[]` — Egeria rejects the empty classification name, so every Tech Catalog technology-type listing renders silently empty instead of erroring
 
 **Status:** fixed and live-verified 2026-09-02.
@@ -1498,6 +1811,8 @@ diff-confirmed byte-identical), then curled the actual production route —
 elements?display_name=PostgreSQL%20Relational%20Database` — which now
 returns the previously-missing asset as the first result, alongside the
 other 14 (15 total with templates included, vs. 14 without — consistent).
+
+---
 
 ### ISSUE-81: `migrate_question_specs.py` links Perspective↔Question via the wrong relationship type (`AssignmentScope`, not `ScopedBy`) — every bootstrap-migrated perspective silently relies on a filename-inference fallback instead
 
@@ -1605,6 +1920,8 @@ across every Question) will show whether it needs the same repair; write
 a small one-off script at that point rather than building one speculatively
 now for data that may not exist anywhere.
 
+---
+
 ### ISSUE-80: `find_report_specs_by_perspective`/`find_report_specs_by_question` are implemented and tested but not exposed anywhere
 
 **Status:** fixed 2026-09-05 (Pyegeria — `pyegeria/core/mcp_adapter.py`,
@@ -1646,6 +1963,8 @@ alongside the existing `find_report_specs` tool the MCP server already
 wires at startup via `load_egeria_report_specs`) and/or as a
 `hey_egeria cat show` subcommand. Low risk — additive, no changes needed
 to the functions themselves.
+
+---
 
 ### ISSUE-78: engine-host participation trio is implemented on `main` but absent from the released 6.0.18.4
 
@@ -1710,34 +2029,852 @@ Nothing else in RE is waiting on it.
 
 ---
 
-# Quick reference: which OMVS client class for which purpose
+### ISSUE-107: Dr.Egeria's create pre-check issues up to 4 redundant `guid-by-unique-name` lookups per command, multiplying an already-slow ambiguous-match server response
 
-| Need | Class | Notes |
-|---|---|---|
-| Business reference data (country/currency codes) | `ReferenceDataManager` | Does **not** cover specification properties (ISSUE-19, docs-only) |
-| Valid metadata values for a property name | `ReferenceDataManager` or `MetadataExpert` | `get_valid_metadata_values` lives on shared `ServerClient` base; no `as_of_time` support — Egeria endpoint doesn't expose it (ISSUE-18) |
-| Specification properties (placeholders, guards, action targets, etc.) | `SpecificationProperties` | `get_specification_property_by_type` now works with either PascalCase or `SCREAMING_SNAKE_CASE` input (ISSUE-17, fixed 2026-08-15); `find_specification_property` with `graph_query_depth=0` also available (ISSUE-15); `get_specification_property_by_guid` works too, `NameError` fixed (ISSUE-28, fixed 2026-08-05, re-verified 2026-08-15) |
-| `DataGrain` / `DataClass` listing | `find_data_value_specifications` / `get_data_value_specifications_by_name("*")` | Both fixed (ISSUE-1, ISSUE-2) |
-| `DataSpec` (Collection subtype) | `CollectionManager.find_collections(metadata_element_type="DataSpec")` | |
-| `DataStructure` / `DataField` | `DataDesigner.find_data_structures` / `find_data_fields` | |
-| Solution blueprints/components (any pyegeria version) | `SolutionArchitect.find_solution_blueprints/components(search_string="*")` | Avoid `find_all_*` variants on old versions (ISSUE-11) |
-| Note logs (list) | `find_note_logs("*", graph_query_depth=0)` | ISSUE-15 |
-| Note logs (entries) | `get_notes_for_note_log(guid, page_size=100)` | ISSUE-3 — never pass `metadata_element_type_name="NoteLog"` |
-| Collection members | `get_collection_members(collection_guid)` | ISSUE-8 — now returns members of any type, not just the collection's own type |
-| Comparing results across two runs/environments that don't match | — | Check whether the same user's credentials were used in both — governance zone visibility can legitimately change results per-user (ISSUE-29) before assuming a pyegeria bug |
-| Multi-classification search (`matchClassifications`, 2+ conditions) | `MetadataExpert.find_metadata_elements` | Fixed in Egeria server (ISSUE-35) |
-| Paging a `find_metadata_elements` result | Set `"startFrom"`/`"pageSize"` **in the body dict** | Fixed (ISSUE-34) — these are NOT separate parameters on this method anymore; passing them as kwargs is silently a no-op. Same for `"graphQueryDepth"`. |
-| Relationships for a single element by guid | `MetadataExpert.get_all_related_elements(guid)` | **Not** `get_metadata_element_by_guid` — that call never returns relationships, by design (ISSUE-37, not a bug) |
-| Project parent/child hierarchy (any linked project, not just hierarchy) | `ProjectManager.get_linked_projects(guid)` | Fixed (ISSUE-42) — was silently returning "No elements found" regardless of real data |
+**Layer:** Pyegeria · **Status:** fixed 2026-09-20 ·
+**Found:** 2026-09-20, reported by the user from a Dr.Egeria bulk load: a
+subject-area file created ~25 folders sharing the same three Display Names
+("Prime Words", "Modifiers", "Class Words" across parent scopes), and files
+using those names went from ~6 seconds to 2+ minutes apiece — 35 of a
+56-minute load, by the user's measurement. Postgres itself was not the
+cause (27ms queries); ambiguous-name resolution was.
+
+**Root cause, confirmed by reading the code (not the client-side "validates
+every match" loop the report's phrasing suggested — no such loop exists in
+pyegeria):**
+- `md_processing/v2/processors.py`'s `resolve_element_guid()` calls the
+  SDK's `__async_get_guid__` **twice** per lookup (once scoped by
+  `tech_type`, once broader if the first comes back empty/ambiguous) —
+  lines 1413 and 1442.
+- `execute()`'s step 4a (line 647) runs an **independent, duplicate**
+  display-name check on top of the one already done inside `fetch_as_is()`
+  (line 638) — using the raw Display Name rather than the already-derived
+  qualified name.
+- Net: a single `Create` of a not-yet-cached, ambiguously-named element can
+  trigger up to 4 HTTP round-trips to the same `guid-by-unique-name`
+  endpoint. `__async_get_guid__` (`pyegeria/core/_server_client.py:224-321`)
+  POSTs once per call and returns whatever the server reports; the
+  ambiguous-match resolution itself (and its ~1s-per-candidate cost) is
+  server-side, not a Python loop — confirmed by reading the full call path.
+- **No fast-path existed for an explicit `Qualified Name`.** `fetch_as_is()`
+  already fast-paths an explicit `### GUID` (ISSUE-59's fix, lines
+  1519-1539) but had no equivalent for an unambiguous, user-supplied
+  qualified name — every Create paid the ambiguous-lookup cost even when
+  the file already fully disambiguated the target.
+
+**Fixed (this pass):** `execute()` (`md_processing/v2/processors.py`) now
+captures whether `Qualified Name` was explicitly authored in the markdown
+*before* step 1a's auto-derivation can inject a derived one under the same
+key (making the two indistinguishable by the time step 4a runs), and skips
+step 4a's duplicate-Display-Name lookup entirely when it was — an explicit
+qualified name already unambiguously identifies the target, and
+`fetch_as_is()` already looked that exact name up and found nothing, which
+is authoritative since no auto-derivation is involved for ISSUE-59's
+collision case to apply to. Covered by
+`tests/micro-tests/test_step4a_skip_with_explicit_qn.py`: one test confirms
+step 4a still runs (≥2 `resolve_element_guid` calls) when the qualified
+name is auto-derived, preserving ISSUE-59's protection; a second confirms
+exactly one call happens when it's explicit. Full `tests/micro-tests/`
+suite re-verified green after the change.
+
+**Fixed (second pass, same day):** `resolve_element_guid()`'s two internal
+passes (Pass 1 WITH the `tech_type` constraint, Pass 2 WITHOUT) each now
+check a per-batch query cache in `self.context` (`_resolve_guid_query_cache`,
+keyed by `(name_or_guid, effective_type)`) before hitting the server, and
+populate it afterward — but **only** for a "not found" or "ambiguous"
+outcome, deliberately never for a genuine single-match found `guid`: caching
+a found match risked going stale within a batch if a later sibling command
+creates an element sharing that exact Display Name (step 4a searches by raw
+Display Name, which the QN-keyed local element dictionary checked earlier
+in the same method can't already cover); a found match is also already the
+cheap server-side path, so there was nothing to gain by caching it. This is
+the actual fix for the reported 25x-repeated-Display-Name scenario: the
+first of the 25 "Prime Words" Creates pays the full ambiguous/not-found
+lookup cost (both passes, since neither cache key exists yet); the other 24
+each hit the cache and make zero calls to the server for that name. Ambiguous
+results are replayed per-instance too (each sibling's own `parsed_output`
+still gets the "Multiple elements found" error appended, even though the
+answer came from cache, since that side effect is per-command). Covered by
+`tests/micro-tests/test_resolve_guid_query_cache.py`: one test drives 5
+sibling Creates through a client that reports the shared probe name as
+ambiguous and asserts the client is only ever called once across all 5; a
+second does the same for a "not found" name and asserts exactly 2 calls
+total (Pass 1 + Pass 2, both only on the first sibling). Full
+`tests/micro-tests/` suite re-verified green.
+
+**Other similar patterns checked, none found:** two structurally similar
+helpers (`_server_client.py:734-772`, `classification_explorer.py:3428-
+3462`) and the legacy v1 path (`extraction_utils.py:416-502`) all do the
+same fail-fast "raise if `len(matches) > 1`" with no client-side loop — no
+matching perf anti-pattern found elsewhere in `pyegeria/core`,
+`pyegeria/omvs`, or `md_processing`.
 
 ---
 
 
+### ISSUE-106: `InitialClassifications`'s `model_serializer` popped the wrong dict key (`other_props` instead of the aliased `otherProps`) — every classification property beyond `class` was silently dropped on every `initialClassifications` call across the whole SDK
+
+**Status:** fixed 2026-09-18 (pyegeria — `pyegeria/models/models.py`),
+verified with an isolated Pydantic round-trip test and live against
+`qs-view-server`. Found while live-verifying the ISSUE-105 Glossary
+classification fix below — `Taxonomy`/`CanonicalVocabulary` classifications
+were being applied correctly (conditionally, per the ISSUE-105 fix) but
+`organizingPrinciple`/`scope` never persisted despite being read and set
+correctly on the Python side.
+
+**Root cause:** `InitialClassifications.capture_other_props()` (a
+`model_validator`) correctly captures any extra properties beyond `class`
+into a Python-side `other_props` field. Its paired
+`serialize_model()` (`model_serializer(mode="wrap")`) is supposed to
+flatten `other_props` back onto the output dict before sending — but it
+does `result.pop("other_props", None)`, the Python field name. Every real
+call site in this codebase dumps with `by_alias=True` (confirmed:
+`_async_new_relationship_request`, `_async_create_element_body_request`,
+etc. all do), and `PyegeriaModel`'s `alias_generator=to_camel_case` means
+the serializer's own `handler(self)` call has *already* aliased the field
+to `otherProps` by the time `serialize_model` runs — so the `pop("other_props")`
+never matched anything, and the extra properties stayed nested under a
+stray `otherProps` key the real Egeria DTO doesn't declare, silently
+dropped server-side (no error — same "declared but not on model" silent-drop
+shape as ISSUE-62, but at the serializer layer instead of the field-declaration
+layer).
+
+**Scope: every caller of `initialClassifications` with more than a bare
+`{"class": ...}`, across the whole SDK, not just Glossary.** Confirmed by
+isolated test:
+```python
+from pyegeria.models.models import NewElementRequestBody
+body = {"class": "NewElementRequestBody", "isOwnAnchor": True,
+        "properties": {"class": "GlossaryProperties", "displayName": "x", "qualifiedName": "x"},
+        "initialClassifications": {
+            "Taxonomy": {"class": "TaxonomyProperties", "organizingPrinciple": "X"},
+        }}
+NewElementRequestBody.model_validate(body).model_dump_json(by_alias=True)
+# before fix: {"Taxonomy": {"class": "TaxonomyProperties", "otherProps": {"organizingPrinciple": "X"}}}
+# after fix:  {"Taxonomy": {"class": "TaxonomyProperties", "organizingPrinciple": "X"}}
+```
+
+**Fix:** `serialize_model` now pops either key —
+`result.pop("otherProps", None) or result.pop("other_props", None)` —
+covering both the aliased (real-world) and unaliased (defensive) cases.
+
+**Verified live:** re-ran the Glossary classification test from ISSUE-105
+after this fix — `organizingPrinciple`/`scope` both persisted correctly
+where they previously silently vanished with the model bug still in place.
+`pytest tests/micro-tests -m unit`: no regressions from this shared-model
+change.
+
+**Found, not fixed — adjacent, separate bug, same class as ISSUE-62:**
+while cleaning up throwaway test elements for this fix, `_async_delete_collection`
+(and likely other `_async_delete_*` wrappers with the same shape) silently
+ignores its own `cascade` parameter whenever it's called with a body dict
+already present — `validate_delete_element_request()`'s `cascade_delete`
+argument is only honored in the `else` branch (body not provided at all);
+the `isinstance(body, dict)` branch validates the dict as-is and never
+merges `cascade_delete` into it. Several `_async_delete_*` methods
+construct a dict body themselves before calling the shared
+`_async_delete_element_request` helper (e.g. `CollectionManager._async_delete_collection`
+does `body = {"class": "DeleteElementRequestBody"}` when its own `body` arg
+is `None`), so `cascade=True` passed to *those* wrappers is silently
+ignored too — confirmed live: `_async_delete_collection(guid, cascade=True)`
+failed with "not permitted, still has a dependent element" even with
+`cascade=True` explicitly passed. Workaround used for cleanup: pass an
+explicit `body={"class": "DeleteElementRequestBody", "cascadeDelete": True}`
+dict directly. Not fixed here — flagging for a dedicated pass across every
+`_async_delete_*` wrapper with this shape, same audit ISSUE-62 should have
+covered but evidently didn't catch this specific code path.
+
 ---
 
-# Appendix: Closed / Not-a-bug entries
+### ISSUE-105: "Cluster B" — 8 real fixes (casing/phantom-key bugs, missing fields, an unwired relationship, a scope-narrower-than-declared field) plus 6 compact-spec attributes removed as confirmed cruft, plus an active Glossary-classification bug found along the way
 
-## Fixed / Resolved
+**Status:** fixed 2026-09-18 (Dr.Egeria/pyegeria — `md_processing/v2/glossary.py`,
+`md_processing/v2/feedback.py`, `md_processing/v2/data_designer.py`,
+`md_processing/v2/embedded_process.py`, `md_processing/v2/report.py`,
+`md_processing/v2/saved_query.py`, `md_processing/v2/solution_architect.py`,
+`md_processing/v2/collection_manager_processor.py`,
+`md_processing/v2/project.py`, `pyegeria/omvs/my_profile.py`, plus 5
+compact-spec family files), verified live with a combined throwaway-element
+test. Continuing the ISSUE-99/100/101/103/104 follow-up list — "Cluster B",
+the lower-confidence remainder of the original attribute-consumption audit
+(confirmed absent only by grep, not read in full context). Every item was
+independently re-confirmed real-vs-cruft via the live type system before
+touching anything, per the discipline ISSUE-103 established.
+
+**Real fixes:**
+- **`Example`** (`Create Glossary Term`, `Create Question`) — real field
+  `examples` (plural) on `GlossaryTermProperties`; `TermProcessor` read the
+  phantom key `'Examples'` (plural — spec attribute is singular `Example`);
+  `QuestionProcessor` never referenced it at all. Both fixed.
+- **`Deployed Implementation Type`/`Resource Name`** (`Create Embedded
+  Process`, `Create Report`, `Create Saved Query`) — real `AssetProperties`
+  fields (confirmed `.http`), inherited via each command's `Asset` bundle.
+  All three processors only built their own type-specific extras, never
+  these two shared-but-inherited fields. Added to all three.
+- **`Default Media Usage Other Id`/`Media Type Other Id`** (`Create Related
+  Media`, plus a bonus find in the adjacent `Cited Document` block) —
+  case-mismatched phantom keys (`...Other ID` vs spec's `...Other Id`), 3
+  sites fixed.
+- **`Grain Statement`/`Granularity Basis`/`Interval`** (`Create Data
+  Grain`) — real `DataGrain` own-attributes, confirmed via the live type
+  system; `DataGrainProcessor` only called the fully generic
+  `set_element_prop_body()`. Added all 3. **Also caught and fixed while
+  verifying live:** `Interval`'s compact-spec `style` was `Simple Float`,
+  but the real server-side type is `long` — sending `1.0` failed with
+  `InvalidFormatException`. Corrected style to `Simple Int`.
+- **`Role List`** (`Create Solution Blueprint`) — real, unwired
+  relationship, same shape as the already-fixed `In Data Structure`
+  (ISSUE-97). `BlueprintProcessor` had no sync of any kind for it. Added a
+  `_sync_role_list` method mirroring the existing `_sync_components`
+  pattern (plain `CollectionMembership`, same relationship the standalone
+  `Link Actor to Blueprint` command already uses).
+- **`Objective`** (`Create Meeting` only, per explicit decision — NOT
+  ToDo/Review/Note, despite the compact spec's shared description implying
+  otherwise) — real `MeetingProperties` field, confirmed live; absent from
+  `ToDo`/`Review`/`Action`. `ProjectProcessor`'s Meeting branch calls
+  `MyProfile._async_create_meeting()`, which had no `objective` parameter
+  at all — added one (both to the SDK method and the processor call site).
+
+**Active bug, not just a missing field — `Create Glossary`'s
+`Is Canonical`/`Is Taxonomy`/`Canonical Scope`/`Organizing Principle`:**
+`CollectionManagerProcessor` was unconditionally applying **both**
+`Taxonomy` and `CanonicalVocabulary` classifications to every single
+Glossary ever created, regardless of what the user set (or didn't set) —
+already-running wrong behavior in production, not a dormant gap. Found:
+`md_processing/v2/glossary.py`'s `GlossaryProcessor` already had the
+*correct* conditional logic written — but `GlossaryProcessor` is **never
+registered** in `setup_dispatcher()` (`Glossary` auto-routes via
+`COLLECTION_SUBTYPES` to `CollectionManagerProcessor` instead) — fully dead
+code, confirmed by grepping the entire dispatcher registration. Fixed in
+the code path that actually runs: classifications now applied only when
+their respective `Is Canonical`/`Is Taxonomy` flag is true (both default
+`False` per the compact spec, matched here), with `Canonical Scope`→`scope`
+and `Organizing Principle`→`organizingPrinciple` wired in. **This fix
+surfaced ISSUE-106** (below) — the classification-conditional logic was
+right, but the properties still didn't persist until that separate,
+deeper pyegeria bug was found and fixed too.
+
+**Confirmed cruft, removed from the compact spec (user decision) — 6
+attributes, cross-file (the `compact-attr-global-namespace` global-namespace
+pattern applied to the *removal* side too: some of these existed
+identically in multiple family files and needed cleanup in each):**
+- `Expected Behavior` (`Create Activity/Blog/Journal Entry`) — zero own
+  attributes on `Notification`/`JournalEntry`/`ActivityEntry`/`BlogEntry`
+  in the live type system.
+- `Due Time`/`Requested Start Time` (`Meeting`/`ToDo`/`Review`/`Note`) — the
+  `.http` "confirmation" that looked real turned out to be a copy-paste
+  artifact (the same oversized field block repeated under 5 unrelated
+  class headers, including `NotificationProperties`, which the live type
+  system separately confirms has zero own fields). `MyProfile`'s own SDK
+  methods have no parameter or override mechanism for either, confirming
+  no real path ever existed.
+- `Role Identifier`/`Role Type` (`Create Solution Role`) — zero own
+  attributes on `SolutionActorRole` or its super `ActorRole`; `Role
+  Type`'s own description referenced an unrelated real type
+  (`GovernanceRole`), reading as confused/stale spec authoring.
+- `Subscription Level` (`Create Digital Subscription`) — redundant
+  duplicate of the already-correctly-wired `Support Level`
+  (`supportLevel` on `DigitalSubscriptionProperties`, confirmed `.http`);
+  no `subscriptionLevel` field exists anywhere in the ground truth.
+
+**Bundle/attribute removal mechanics:** `Person Action Base` (shared
+byte-for-byte across `commands_feedback_compact`, `commands_project_compact`,
+`commands_actor_manager_compact`) needed `Due Time`/`Requested Start Time`
+stripped from all 3 copies; doing so exposed that 2 of the 3 files were
+each already missing a *different* pre-existing shared attribute locally
+(`Priority` absent from feedback/actor_manager, `Situation` absent from
+project/actor_manager) despite their bundles referencing them successfully
+via cross-file resolution at runtime — copied the canonical definitions
+into the files missing them (matching the `compact-attr-global-namespace`
+"always copy, never reinvent" rule) before the bundle `PUT` would validate.
+Not something introduced by this session; a latent inconsistency this
+cleanup pass happened to surface and correct as a side effect.
+
+**Verified live:** one combined throwaway-element test file (Glossary +
+Term + Question + Embedded Process + Related Media + Data Grain + Solution
+Role + Solution Blueprint with `Role List` + Meeting with `Objective`).
+First `--process` run: 1 failure (`Interval`'s float-vs-long style bug,
+found and fixed as above), everything else succeeded. Re-ran clean after
+the style fix. Fetched every created element back individually and
+confirmed: `examples` on both Term and Question; `Taxonomy`/
+`CanonicalVocabulary` classifications present conditionally with
+`organizingPrinciple`/`scope` populated (after the ISSUE-106 fix);
+`grainStatement`/`granularityBasis`/`interval` on the Data Grain;
+`objective` on the Meeting; the `SolutionActorRole`↔`SolutionBlueprint`
+membership from `Role List` (confirmed indirectly — a delete of the
+blueprint correctly failed with "still has a dependent SolutionActorRole
+element" until the role was removed first). All throwaway elements
+deleted afterward. `scripts/dr_egeria_attribute_consumption_audit.py`
+re-run scoped to every touched command: all 0 findings.
+`pytest tests/micro-tests -m unit`: no regressions.
+
+**Found, not fixed — a second unrelated dead-code discovery, same shape as
+ISSUE-104's "Associated Group":** `Classify Glossary as Canonical`/
+`Classify Glossary as Taxonomy` are declared commands with no registered
+processor (surfaced by the audit script's own "unrouted" reporting) — may
+be an intended alternative, post-creation classification mechanism that
+was never wired up, or may be superseded by this fix's create-time
+handling. Not investigated further; flagging for whoever next touches the
+Glossary family.
+
+---
+
+### ISSUE-104: "Cluster A" — 4 relationship-property gaps, a phantom-key relationship-endpoint bug, a genuinely-missing hierarchy relationship, and one Link command with no implementation at all
+
+**Status:** fixed 2026-09-18 (Dr.Egeria/pyegeria — `md_processing/md_processing_utils/common_md_utils.py`,
+`md_processing/v2/data_designer.py`, `md_processing/v2/governance.py`,
+`pyegeria/models/models.py`), verified live against `qs-view-server` with a
+single combined throwaway-element test covering all 7 items. Continuing the
+ISSUE-99/100/101/103 follow-up list, picked as "Cluster A" — the
+higher-confidence half of what remained, per a live type-system check on
+each item before touching code (same discipline ISSUE-103 established).
+
+**1-3. Three relationship-property gaps, one shared fix.** `Zone
+Membership`/`Last Notification`/`Activity Status` (`Link Notification
+Subscriber`), `Assignment Type` (`Link Assignment Scope`), and `Expected
+Time Allocation Percent` (`Link Person/Team Role Appointment`) were all
+declared real by the live type system (`NotificationSubscriber`/
+`AssignmentScope`/`PersonRoleAppointment`/`TeamRoleAppointment` relationship
+defs) but never read — all three routes went through the fully generic
+`set_rel_prop_body()` in `common_md_utils.py`, which only builds
+`description`/`label`/`typeName`/`effectiveFrom`/`effectiveTo`/
+`extendedProperties`. Fixed with one shared edit: `set_rel_prop_body` now
+branches on its own computed `prop_name` (the real Egeria type name) to add
+each type's own fields, mirroring the `update_gov_body_for_type`/
+`set_collection_manager_body` pattern already used for element bodies.
+Also added the missing `last_notification` field to pyegeria's existing
+`NotificationSubscriberProperties` Pydantic model (not a live double-gap
+today, since this write path uses raw dicts, but worth fixing for
+consistency/future use).
+
+**4. `In Data Field` — same shape as the already-fixed `In Data Structure`,
+plus a second bug found while fixing it.** Real (`NestedDataField`
+relationship, confirmed via an existing code comment). Also found:
+`DataFieldProcessor._sync_all_rels()` read a key, `'Parent Data Field'`,
+that doesn't exist anywhere in the compact spec at all — a phantom-key bug
+(ISSUE-100 `Allow Duplicates` shape) in code that ISSUE-97/101's fixes to
+this exact method had already touched twice this week and missed. Renamed
+to `'In Data Field'` with the singular-`guid` fallback (`max_cardinality: 1`,
+same pattern as the sibling fixes).
+
+**5-6. `In Data Value Specification`/`Specializes Data Value Specification`
+— genuinely missing, user confirmed both are the same relationship.** Both
+attributes read as near-synonyms in the compact spec; user decided to treat
+them as aliases of the one real `DataValueHierarchy` relationship (the same
+one `Link Data Value Composition` already uses via
+`_async_link_specialized_data_value_specification`). Neither was wired at
+all on `Create Data Class`, `Create Data Grain`, or `Create Data Value
+Specification` — none of the three processors synced any relationship for
+either attribute. Added a `_sync_value_spec_parent`-style sync to all three
+(as a new 5th section in `DataClassProcessor`'s existing `_sync_all_rels`;
+as new standalone helper methods on `DataGrainProcessor` and
+`DataValueSpecificationProcessor`, which previously had *no* relationship
+sync of any kind).
+
+**7. `Link Associated List` — not a field-mapping bug, a completely
+unimplemented command.** `governance.py`'s `endpoint_map` had no entry for
+`"Associated List"` at all — every invocation raised
+`NotImplementedError`. No dedicated SDK method exists for
+`AssociatedSecurityList` (`SecurityAccessControl↔SecurityList`, confirmed
+real via the live type system), and no `.http` worked example exists
+either. Found and reused the actually-correct generic mechanism instead of
+writing a new bespoke SDK method: `MetadataExpert._async_create_related_elements`/
+`_async_detach_related_elements_in_store` (wrapping the generic
+`createRelatedElementsInStore`/`.../detach-all` endpoints, already proven in
+production by `AsyncBaseCommandProcessor._sync_parent_relationship` for the
+same "no bespoke wrapper exists" reason). **Explicitly did not** route this
+through the neighboring `_async_link_peer_definitions` call used for
+`Associated Group`/`Regulation Certification Type` — that method's own
+docstring restricts it to `GovernanceDriverLink`/`GovernancePolicyLink`/
+`GovernanceControlLink`, and `SecurityList` is not a governance-definition
+peer of `SecurityAccessControl`. One body-shape gotcha caught before
+shipping: the generic detach call validates against
+`OpenMetadataDeleteRequestBody` (strict `class` literal), not the
+`DeleteRelationshipRequestBody` shape every other branch in this method
+builds — had to construct that request body separately rather than reusing
+the shared one.
+
+**Found, not fixed — flagged as pre-existing dead code, adjacent to item
+7:** `governance.py`'s `"Associated Group"` handling (both the `endpoint_map`
+entry and the `elif object_type in {"Associated Group", ...}` branches, in
+both the Create and Detach paths) references a relationship type,
+`AssociatedSecurityGroup`, that does not exist anywhere in the live type
+system, and no compact-spec command anywhere actually has
+`object_type == "Associated Group"` — fully unreachable, apparently a stale
+leftover. Left as-is (out of scope for this fix); worth a follow-up cleanup
+pass.
+
+**Verified live:** one combined throwaway-element test file exercising all
+7 fixes in a single `--process` run (Notification Type + subscriber
+Collection + Security Access Control + Security List + Person + Person Role
++ parent/child Data Fields + parent Data Value Specification + child Data
+Class), 0 `FAILURE` rows. Fetched every created element back individually
+and confirmed: `activityStatus`/`zoneMembership`/`lastNotification` on the
+`NotificationSubscriber` relationship; `expectedTimeAllocationPercent` on
+`PersonRoleAppointment`; `assignmentType` on `AssignmentScope`; the real
+`NestedDataField` relationship linking child→parent Data Field; the real
+`DataValueHierarchy` relationship linking Data Class→Data Value
+Specification; and the real `AssociatedSecurityList` relationship linking
+Security Access Control→Security List with `operationName` set. All
+throwaway elements deleted afterward.
+`scripts/dr_egeria_attribute_consumption_audit.py` re-run scoped to every
+touched command: all 0 findings (Data Grain's separate, untouched
+`Grain Statement`/`Granularity Basis`/`Interval` gap still correctly
+appears, confirming the audit still works). `pytest tests/micro-tests -m
+unit`: no regressions.
+
+**Still open from the ISSUE-99/100/101 list:** `Operation Name` is now
+fixed (covered above as item 7's `Associated List`). Still open: the
+longer single-command tail (`Expected Behavior`, `Example`, `Due
+Time`/`Objective`/`Requested Start Time`, `Canonical Scope`/`Is
+Canonical`/`Is Taxonomy`, `Subscription Level`, `Deployed Implementation
+Type`/`Resource Name`, `Default Media Usage Other Id`/`Media Type Other
+Id`, `Role Identifier`/`Role Type`, `Role List`, `Grain
+Statement`/`Granularity Basis`/`Interval`) — "Cluster B" in earlier
+discussion, lower confidence (grep-confirmed absence only, not read in full
+context), likely to share root causes once grouped rather than being 15+
+independent bugs.
+
+---
+
+### ISSUE-103: `Link Agreement Terms and Conditions`'s compact spec declared the wrong relationship type entirely (`CollectionMembership` instead of `AgreementItem`), and the code that already implemented it correctly had its own phantom-key bug
+
+**Status:** fixed 2026-09-17 (Dr.Egeria — compact spec via the Spec Editor
+API, `md_processing/v2/governance.py`), verified live against
+`qs-view-server` (`Create Agreement` → `Create Terms and Conditions` →
+`Link Agreement Terms and Conditions`, fetched back, confirmed the real
+`AgreementItem` relationship with all 4 properties persisted, then deleted).
+Resolves the "investigated, explicitly not fixed" item from ISSUE-101.
+
+**Root cause:** the compact spec (`OM_TYPE: CollectionMembership`, bundle
+`Collection Membership`) and the processor code
+(`GovernanceLinkProcessor`'s `elif object_type == "Agreement T&C":` branch,
+building `AgreementItemProperties` and calling `_async_link_agreement_item`)
+disagreed about which real Egeria relationship type this command uses.
+Confirmed via the live type system (`ValidMetadataManager._async_get_all_relationship_defs()`,
+filtered to names containing "Agreement"/"Term") that `AgreementItem` is a
+real, distinct relationship (`endDef1: Agreement`, `endDef2: Referenceable`,
+fields `agreementItemId`/`agreementStart`/`agreementEnd`/`entitlements`/
+`restrictions`/`obligations`/`usageMeasurements`) with no `membershipType`
+field at all — the code was right, the spec was wrong. User confirmed
+`linkAgreementItem` was the intended relationship before this was
+investigated further.
+
+**Fix — compact spec:** changed `OM_TYPE` to `AgreementItem` and pointed the
+command at a new bundle `Agreement T&C Base`
+(`Agreement Item Id`/`Agreement Start Date`/`Agreement End Date`/`Usage
+Measurements`) — deliberately narrower than the sibling `Link Agreement
+Item` command's own `Agreement Item` bundle, since `Entitlements`/
+`Obligations`/`Restrictions` already live on the linked `Terms and
+Conditions` element itself (its own dedicated bundle), not on this
+relationship instance, and reusing the sibling's full bundle would have
+forced every user to also fill in a redundant `Item Name` (duplicating
+`Terms & Conditions Id`, `min_cardinality: 1`) for no reason — confirmed by
+trying the wholesale-reuse approach first and hitting exactly that
+validation error live.
+
+**Near-miss caught and fixed, not shipped:** the first attempt created a
+new bundle also named `Agreement Item` in the Governance Officer family's
+own file. Bundle names are merged globally across every compact JSON file
+the same way attribute names are (`compact_loader.py`'s `all_bundles`,
+last-file-alphabetically-wins) — undocumented anywhere until now. Digital
+Product Manager's file (`digital_products` < `governance_officer`
+alphabetically) already had a real, working `Agreement Item` bundle used by
+`Link Agreement Item`; the new one would have silently replaced it at the
+next `refresh_specs`, corrupting that command's attribute set. Caught only
+because `Link Agreement Item` was noticed by chance while researching this
+fix — not by any tool, since the Spec Editor's structural validation and
+`attribute_sharing` reporting are both file-scoped and don't cover this.
+Fixed by renaming to the distinct `Agreement T&C Base` instead. Documented
+in the `compact-attr-global-namespace` memory and the
+`dr-egeria-command-sync` skill's Step 1, both updated to cover bundles, not
+just attributes.
+
+**Fix — code:** `GovernanceLinkProcessor`'s `Agreement T&C` branch read
+`attributes.get("Start Date", ...)`/`attributes.get("End Date", ...)` — a
+phantom-key mismatch (this command's bundle, correctly, never provided those
+generic names) found only because properly wiring the bundle exposed it.
+The sibling `CollectionLinkProcessor`'s `Link Agreement Item` branch already
+correctly used `Agreement Start Date`/`Agreement End Date` for the identical
+`agreementStart`/`agreementEnd` fields — renamed to match.
+
+**Verified live:** created a throwaway `Agreement`, `Terms and Conditions`,
+and linked them via `Link Agreement Terms and Conditions` with `Agreement
+Item Id`/`Agreement Start Date`/`Agreement End Date`/`Usage Measurements`
+set. Fetched the `Agreement` back and confirmed a real `AgreementItem`
+relationship (not `CollectionMembership`) with all 4 values persisted
+exactly as sent, linking to the correct `TermsAndConditions` element. Both
+`commands_governance_officer_compact` and `commands_digital_products_compact`
+re-validated clean (`structural_ok: true`, no new warnings) after cleanup of
+the near-miss. `pytest tests/micro-tests -m unit`: no regressions.
+
+---
+
+### ISSUE-101: `Is Case Sensitive` never mapped, field↔structure link sent the wrong wire property name for `Position`, and `Membership Type`/`Dependency Description` were phantom-key or unmapped on 5 relationship-property bodies
+
+**Status:** fixed 2026-09-17 (Dr.Egeria — `md_processing/v2/data_designer.py`,
+`md_processing/v2/collection_manager_processor.py`,
+`md_processing/v2/solution_architect.py`), verified live against
+`qs-view-server` with throwaway elements, including one raw-SDK isolation
+test that caught a second bug this fix's own first attempt introduced.
+Continuing the ISSUE-99/100 follow-up list.
+
+**`Is Case Sensitive`** (Create Data Class) — confirmed by the user to be a
+real `DataClass` field. Added `"isCaseSensitive": attributes.get('Is Case
+Sensitive', {}).get('value')` to `DataClassProcessor`'s properties dict.
+Verified live: `True` persisted correctly.
+
+**`Position`/`Minimum Cardinality`/`Maximum Cardinality`** (declared on
+`Create Data Field`, meant for the field↔structure `MemberDataField`
+relationship) — **the real fix site was not `LinkFieldToStructureProcessor`**
+(the standalone `Link Data Field to Data Structure` command has no
+cardinality attributes at all) but `DataFieldProcessor._sync_all_rels()`,
+whose `add` lambda for the Data Structures sync called
+`_async_link_member_data_field(ds, guid, None)` — body always `None`. Fixed
+by threading `attributes` through both call sites into `_sync_all_rels` and
+building a real `MemberDataFieldProperties` body.
+
+**Caught during live verification, not before:** the first attempt used
+`"dataFieldPosition"` as the wire key, taken from the SDK method's own
+docstring sample body (`data_designer.py` line ~2286) — that docstring is
+**wrong**. Live verification showed `position` silently staying `0` (server
+default) while `minCardinality`/`maxCardinality` round-tripped, which didn't
+match "attribute never sent" (that would leave all three at default).
+Queried the live type system directly (`ValidMetadataManager._async_get_all_relationship_defs()`,
+filtered to `MemberDataField`) — the real, only attribute name is `position`,
+not `dataFieldPosition`. Fixed the key; a fresh throwaway round-trip then
+showed `position: 3` (sent value) correctly persisted. **The SDK docstring
+itself is still wrong** (not fixed here — out of scope for this pass, but a
+real, confirmed-live ground-truth error worth a follow-up).
+
+**Not a bug, a genuine Egeria server quirk — do not attempt to fix
+client-side:** even with the correct key, `minCardinality` consistently
+persists as `maxCardinality`'s value regardless of what's actually sent.
+Isolated with a raw SDK call bypassing Dr.Egeria entirely
+(`_async_link_member_data_field` called directly with
+`{"position": 3, "minCardinality": 1, "maxCardinality": 5}`) — server still
+returned `minCardinality: 5`. Confirmed server-side, not a pyegeria or
+Dr.Egeria client bug; noting here so nobody re-investigates the client code
+for this specific symptom.
+
+**`Membership Type`** — user confirmed this is a real `CollectionMembership`
+relationship property (not spec cruft, despite zero hits across every
+`.http` ground-truth file — those worked examples are evidently non-exhaustive).
+Added to both real fix sites:
+- `CollectionLinkProcessor`'s `Add Member to Collection` branch
+  (`collection_manager_processor.py`).
+- `SolutionLinkProcessor`'s generic `om_type == "CollectionMembership"`
+  branch (`solution_architect.py`) — one fix covers all 4 affected commands
+  (`Link Actor to Blueprint`, `Link Blueprint Child`, `Link Information
+  Supply Chain Child`, `Link Solution Component to Blueprint`), confirmed by
+  checking each command's `OM_TYPE` via the Spec Editor API before editing.
+
+Verified live (Dr.Egeria pipeline, not raw SDK, to also confirm the parser/
+processor wiring): `membershipType: 'TestMembershipType2'` persisted
+correctly on an `Add Member to Collection` command.
+
+**Investigated, explicitly not fixed — a different, deeper bug:**
+`Link Agreement Terms and Conditions` ("T&C") was also on the `Membership
+Type` list, but its compact spec (`OM_TYPE: CollectionMembership`, bundle
+`Collection Membership`) does not match what the processor code actually
+does — `GovernanceLinkProcessor`'s `elif object_type == "Agreement T&C":`
+branch builds an entirely different `AgreementItemProperties` body and calls
+`_async_link_agreement_item`, which has no `membershipType` field at all.
+This is a spec/code type mismatch, not a missing-field gap — adding
+`membershipType` to the wrong property class would be a no-op at best. Left
+untouched; needs someone to determine whether the compact spec's `OM_TYPE`
+is stale or the code's relationship-type choice is wrong, before any fix.
+
+**`Dependency Description`** (`Link Product Dependency`) — phantom-key bug,
+same shape as `Allow Duplicates` in ISSUE-100:
+`CollectionLinkProcessor`'s `Product Dependency` branch read
+`attributes.get('Description', ...)`, but this command's `custom_attributes`
+are only `["Dependency Description", "Digital Product 1", "Digital Product
+2"]` — no generic `Description` attribute exists on it at all. Renamed the
+key. **Adjacent phantom key found, not fixed:** the same block also reads
+`attributes.get('Label', ...)` — `Label` isn't in this command's
+`custom_attributes` either, so it's always `None`; harmless (an optional
+field silently unset, not a required one silently dropped) but flagged for
+whoever next touches this block.
+
+**Verification:** all four confirmed fixes re-checked with
+`scripts/dr_egeria_attribute_consumption_audit.py` scoped per command —
+`Is Case Sensitive` and `Position`/`Minimum Cardinality`/`Maximum
+Cardinality` no longer appear on `Data Class`/`Data Field`'s finding lists;
+`Add Member to Collection`, `Link Actor to Blueprint`, `Link Product
+Dependency` all show 0 findings. `pytest tests/micro-tests -m unit`: no
+regressions.
+
+**Still open from the ISSUE-99/100 list:** `Link Agreement Terms and
+Conditions`'s spec/code mismatch fixed separately, see ISSUE-103. Still
+open: `Operation Name`/`Last Notification`/`Assignment Type`/`Expected Time
+Allocation Percent` on other Link commands, and the longer single-command
+tail (`Expected Behavior`, `Example`, `Due Time`/`Objective`/`Requested
+Start Time`, `Canonical Scope`/`Is Canonical`/`Is Taxonomy`, `Subscription
+Level`, `Deployed Implementation Type`/`Resource Name`, `Default Media Usage
+Other Id`/`Media Type Other Id`, `Role Identifier`/`Role Type`, `Role List`,
+`In Data Value Specification`/`Specializes Data Value Specification`, `In
+Data Field`, `Grain Statement`/`Granularity Basis`/`Interval`).
+
+---
+
+### ISSUE-100: `Create Data Lens`'s 9 fields were never mapped (same shape as ISSUE-71), and `Allow Duplicate Values` was either read under a phantom key or not read at all
+
+**Status:** fixed 2026-09-17 (Dr.Egeria —
+`md_processing/md_processing_utils/common_md_utils.py`,
+`md_processing/v2/data_designer.py`), verified live against
+`qs-view-server` with throwaway elements. Two of the three follow-up items
+from ISSUE-99's list, picked next by priority.
+
+**Data Lens:** `update_gov_body_for_type()` (`common_md_utils.py`, called by
+every `GovernanceProcessor`-routed command) had no branch for `DataLens` —
+all 9 of its compact-spec attributes (`Data Collection Start/End Time`,
+`Max`/`Min Height`/`Latitude`/`Longitude`, `Scope Elements`) fell through to
+the generic fallback at the end of the function, exactly the shape the
+`GovernanceActionType`/`GovernanceActionProcessStep` branch immediately
+above it already calls out as ISSUE-71. No dedicated Pydantic model exists
+for `DataLensProperties` (it's a raw-dict body validated generically by
+`_async_create_element_body_request`), so unlike ISSUE-98/99 there was no
+second model-level gap to fix. Field names confirmed against both the
+`GovernanceOfficer._async_create_data_lens`-style SDK method's own docstring
+sample body and the Spec Editor API. **Note:** the SDK docstring also shows
+`dataValidityStartTime`/`dataValidityEndTime`/`dataCoverageStartTime`/
+`dataCoverageEndTime` as real wire fields with no corresponding compact-spec
+attribute at all — out of scope for this fix, a possible future addition if
+wanted, not a bug.
+
+**`Allow Duplicate Values` — two different bugs at two different sites, one
+false lead:**
+- `DataClassProcessor.apply_changes()` (`data_designer.py` ~line 504) read
+  `attributes.get('Allow Duplicates', ...)` — a key that does not exist
+  anywhere in the compact spec (real name: `Allow Duplicate Values`, on
+  `Data Class Base`) — always silently defaulted to `True`. Renamed the key.
+- `set_data_field_body()` (`common_md_utils.py`) never referenced the
+  attribute at all, despite `Allow Duplicate Values` being directly in
+  `Create Data Field`'s `custom_attributes`. Added the missing line.
+- **False lead, not fixed:** the identical `'Allow Duplicates'` string also
+  appears in `DataValueSpecificationProcessor` (`data_designer.py` line 54).
+  Confirmed harmless dead code — `Create Data Value Specification`'s own
+  bundle doesn't declare `Allow Duplicate Values` at all, so this lookup
+  always returns the default regardless of the key's spelling. Left as-is;
+  renaming it would be cosmetic, not a fix.
+
+**Verified live:** created a throwaway Data Class (`Allow Duplicate Values:
+false`), Data Field (`Allow Duplicate Values: false`), and Data Lens (all 6
+geo fields set), fetched all three back, confirmed
+`properties.allowsDuplicateValues` was `False` (not the `True` default) on
+both, and all 6 Data Lens fields (`maxHeight`/`minHeight`/`maxLatitude`/
+`minLatitude`/`maxLongitude`/`minLongitude`) persisted with their exact
+values — then deleted all three. Re-ran
+`scripts/dr_egeria_attribute_consumption_audit.py` scoped to each affected
+command: `Data Lens` now 0 findings; `Allow Duplicate Values` no longer
+appears in either `Data Class`'s or `Data Field`'s remaining finding list.
+`pytest tests/micro-tests -m unit`: no regressions.
+
+**Still open from ISSUE-99's follow-up list** (not touched this round):
+`Position`/`Minimum Cardinality`/`Maximum Cardinality` on the field↔structure
+link, `Is Case Sensitive` (Data Class), the `Membership Type`/relationship-
+property gaps across 6 Link commands, and the longer single-command tail —
+see ISSUE-99 for the full list.
+
+---
+
+### ISSUE-99: `Purpose` — a required attribute on ~30 Collection-family `Create` commands — was never mapped into the request body at all
+
+**Status:** fixed 2026-09-17 (Pyegeria/Dr.Egeria —
+`md_processing/md_processing_utils/common_md_utils.py`,
+`pyegeria/omvs/collection_manager.py`), verified live against
+`qs-view-server` with a throwaway element. Found by
+`scripts/dr_egeria_attribute_consumption_audit.py` (see below), a new
+static-audit tool built in response to ISSUE-97/98 to find this whole bug
+class proactively instead of one report at a time.
+
+**Root cause:** `set_element_prop_body()` — the base `Referenceable`-level
+body builder every element type ultimately calls — never read `Purpose` at
+all. `set_collection_manager_body()` (called for every `CollectionManagerProcessor`-
+routed command: Collection, Data Spec, Data Dictionary, the whole Digital
+Product family, Glossary, Report Type, Security Group/List/Role, Skill Set,
+and ~20 more) only added Digital-Product-specific fields on top, never
+`purpose`. **`Purpose` has `min_cardinality: 1` in the compact spec** — it's
+presented to the user as required, they fill it in, and it was silently
+discarded on every single one of these ~30 commands. Also missing from the
+`CollectionProperties` Pydantic model (`pyegeria/omvs/collection_manager.py`)
+— the same double-gap pattern as ISSUE-98's `Current Version`. Confirmed
+`purpose` is a real wire field via `Egeria-api-collection-manager.http`'s
+worked examples (appears in every `createCollection`-family sample body,
+right after `authors`).
+
+**Scope note:** `Purpose` is also declared on `Create Solution Blueprint`
+and `Create Information Supply Chain`, which use `set_element_prop_body()`
+directly (not `set_collection_manager_body()`) and are **not** covered by
+this fix — `purpose` does not appear anywhere in
+`Egeria-api-solution-architect.http`'s ground truth, so unlike the Collection
+case this looks like the same "spec cruft, no real DTO field" shape as
+ISSUE-98's `Product Status`/`Product Type`, not a simple omission. Not
+resolved here; flagged for the same maintainer call (map vs. remove) ISSUE-98
+got.
+
+**Fix:** added `purpose: str | None = None` to `CollectionProperties` (all
+Collection subtypes inherit it), and
+`prop_bod["purpose"] = attributes.get('Purpose', {}).get('value', None)` to
+`set_collection_manager_body()`, unconditionally (applies to every subtype
+routed through it, not just Digital Product). Verified live: created a
+throwaway Data Specification with `### Purpose` set, fetched it back,
+confirmed `properties.purpose` persisted correctly, then deleted it.
+`pytest tests/micro-tests -m unit`: no regressions.
+
+**Also from this audit run, not yet fixed — filed for follow-up, not
+speculative:**
+- `Create Data Lens`'s 9 DataLens-specific fields (`Data Collection Start/End
+  Time`, `Max`/`Min Height`/`Latitude`/`Longitude`, `Scope Elements`) fall
+  through to the fully generic governance body builder — same shape as
+  ISSUE-98, a subtype that never got its own properties branch
+  (`md_processing/v2/governance.py`, `GovernanceProcessor`).
+- `DataClassProcessor`/`DataFieldProcessor` (`data_designer.py` lines
+  ~54/504) read `attributes.get('Allow Duplicates', ...)` — that key does
+  not exist anywhere in the compact spec (real name: `Allow Duplicate
+  Values`) — always silently defaults to `True`.
+- `Is Case Sensitive` (Data Class) confirmed absent from the `DataClassProperties`
+  body.
+- `Position`/`Minimum Cardinality`/`Maximum Cardinality`, declared on
+  `Create Data Field`, are never sent on the actual field↔structure link —
+  `LinkFieldToStructureProcessor` sends a completely empty
+  `MemberDataFieldProperties` body, even though the live relationship
+  carries exactly these 3 fields as server defaults.
+- `Membership Type` is declared as a relationship property on 6 different
+  Link commands (`Add Member to Collection`, `Link Actor to Blueprint`,
+  `Link Blueprint Child`, `Link Information Supply Chain Child`,
+  `Link Solution Component to Blueprint`, `Link Agreement Terms and
+  Conditions`) across 3 different processors
+  (`CollectionLinkProcessor`/`SolutionLinkProcessor`/`GovernanceLinkProcessor`)
+  and never read in any of them; same pattern for `Dependency Description`
+  (`Link Product Dependency`), `Operation Name` (`Link Associated List`),
+  `Last Notification` (`Link Notification Subscriber`), `Assignment Type`
+  (`Link Assignment Scope`), `Expected Time Allocation Percent` (`Link
+  Person/Team Role Appointment`) — all confirmed by reading the relevant
+  processor's relationship-properties body, not just the audit heuristic.
+- A longer tail of single-command gaps (`Expected Behavior`, `Example`,
+  `Due Time`/`Objective`/`Requested Start Time`, `Canonical Scope`/`Is
+  Canonical`/`Is Taxonomy`, `Subscription Level`, `Deployed Implementation
+  Type`/`Resource Name`, `Default Media Usage Other Id`/`Media Type Other
+  Id`, `Role Identifier`/`Role Type`, `Role List`, `In Data Value
+  Specification`/`Specializes Data Value Specification` (likely the same
+  ISSUE-97 singular/plural shape), `In Data Field`, `Grain Statement`/
+  `Granularity Basis`/`Interval`) confirmed absent by targeted grep but not
+  read in full surrounding context — one confidence tier below the items
+  above; see the audit script's own report for the full list.
+- `Estimated Volumetrics` (`Create Information Supply Chain`) is **not** a
+  new finding — it cross-references the existing ISSUE-64 entry's own
+  follow-up note (suspected misattributed bundle field, not a simple
+  "never read" bug).
+
+**New tool, added this session:** `scripts/dr_egeria_attribute_consumption_audit.py`
+— a static audit that checks, for every compact-spec command, whether its
+processor actually reads each declared attribute (`UNCONSUMED`) and whether
+`Reference Name`/`Reference Name List` attributes are read with the matching
+`guid`/`guid_list` cardinality key (`CARDINALITY_MISMATCH`, the ISSUE-97
+shape). It's a heuristic, not a proof — see its docstring's "Known
+limitations" section — and it has one confirmed class of false positive:
+`SolutionLinkProcessor`'s generic `id1_key`/`id2_key` peer-link mechanism
+resolves the two link-endpoint attributes dynamically from
+`spec.get("custom_attributes")[0]`/`[1]`, never by literal string match, so
+its ~21 `Reference Name`-style findings should be disregarded. A full run
+also surfaced that `COMMAND_DEFINITIONS["Command Specifications"]` yields
+some command names more than once (a few findings appear duplicated) — a
+tool-side dedup bug, not a second instance of the underlying finding.
+
+---
+
+### ISSUE-98: `Create Digital Product`'s `Product Status`/`Product Type` were spec cruft with no real DTO field, and `Current Version` was silently dropped
+
+**Status:** fixed 2026-09-17 (Pyegeria/Dr.Egeria — compact spec via the
+Spec Editor API, `md_processing/md_processing_utils/common_md_utils.py`,
+`pyegeria/omvs/collection_manager.py`), verified via `refresh_specs` +
+unit tests. Reported by an external maintainer/user agent.
+
+**Reported symptom:** `Product Status`, `Product Type`, and `Current
+Version` on `Create Digital Product` were not mapped into the request
+body at all, so products carried their status in `Maturity` instead.
+
+**Root cause, `Current Version`:** `set_collection_manager_body()`'s
+Digital Product branch built `productName`/`maturity`/`serviceLife`/
+`introductionDate`/`withdrawalDate`/`nextVersionDate` but never read
+`Current Version` — a plain omission. It's also a real wire field
+(`currentVersion`, confirmed in `Egeria-api-product-manager.http`'s
+`createDigitalProduct` example) that was additionally missing from the
+`DigitalProductProperties` Pydantic model in
+`pyegeria/omvs/collection_manager.py` — a double gap per this repo's
+known "declared-but-not-on-the-model = silently dropped" pattern
+(see ISSUE-62). A second, dead body-builder `set_product_body()` (never
+called from anywhere) had the identical gap, left as-is since it's unused.
+
+**Root cause, `Product Status`/`Product Type`:** unlike `Current Version`,
+neither corresponds to any real field on the Egeria
+`DigitalProductProperties` DTO — confirmed against the `.http` ground
+truth. Real lifecycle status is set via a separate
+`updateDigitalProductStatus` operation using `contentStatus`/
+`deploymentStatus`, not exposed by any Dr.Egeria command for Create/Update
+Digital Product. These two attributes were spec cruft, not simply
+unmapped — user confirmed removal rather than inventing a mapping.
+
+**Fix:** added `"currentVersion": attributes.get('Current Version', {}).get('value', None)`
+to `set_collection_manager_body`'s Digital Product branch, and
+`current_version: str | None = None` to `DigitalProductProperties`.
+Removed `Product Status`/`Product Type` from the `Digital Product Base`
+bundle and their attribute definitions from
+`commands_digital_products_compact.json` via the Spec Editor's REST API
+(neither was shared with another family — `attribute_sharing` was empty
+for both), then ran `refresh_specs --merge-reports` to regenerate
+templates/help/report specs. `validate_compact_specs`: 0 errors. Proper
+status support for Digital Products (via `contentStatus`/
+`deploymentStatus`) is not implemented — no command currently calls
+`updateDigitalProductStatus` — and would need a follow-up if wanted.
+
+---
+
+### ISSUE-97: `Create Data Structure`'s `In Data Specification` and `Create Data Field`'s `In Data Structure` were silently dropped — spec declares them singular, processor only read a `guid_list`
+
+**Status:** fixed 2026-09-17 (Dr.Egeria — `md_processing/v2/data_designer.py`),
+verified live against `qs-view-server` with throwaway elements (created,
+relationship confirmed via direct fetch, then deleted). Reported by an
+external maintainer/user agent.
+
+**Reported symptom:** both attributes are declared singular
+(`"style": "Reference Name"`, `max_cardinality: 1`) in
+`commands_data_designer.json`, but the link was never established — no
+error, `--process` reported `SUCCESS`. Users worked around it with
+explicit `Add Member to Collection` / `Link Field to Structure` blocks,
+deliberately omitting the `In` attributes so a fix couldn't double-link.
+
+**Root cause:** the parser (`md_processing/v2/processors.py`, ~line 787-840)
+stores a singular `Reference Name` attribute's resolved guid under
+`attr_data["guid"]`, and only populates `attr_data["guid_list"]` when the
+raw input value is itself a list. `DataStructureProcessor.apply_changes`
+(line 220) and `DataFieldProcessor.apply_changes` (line 326) both read
+only `.get("guid_list", [])` for `In Data Specification`/`In Data
+Structure`, which is never set for these singular attributes — the
+existing `if isinstance(x, list) else [x]` wrapper around the *default*
+`[]` never triggers, since a default empty list is already a list. The
+correct sibling pattern already existed in the same file (`Data Class`,
+`Specializes Data Class`, `Glossary Term` all correctly also check the
+singular `guid` key) — just not applied here.
+
+**Also found and fixed as the same bug:** `In Data Dictionary` (also a
+singular `Reference Name` attribute per the compact spec) had the
+identical `guid_list`-only read at 3 call sites — `DataStructureProcessor`,
+`DataFieldProcessor`, and `DataClassProcessor`.
+
+**Fix:** all 4 call sites (`In Data Specification`, `In Data Structure` x2,
+`In Data Dictionary` x3) now fall back to the singular `guid` key when
+`guid_list` is absent, matching the existing `Glossary Term`/`Specializes
+Data Class` pattern. Verified end-to-end against a live server: created a
+throwaway `Data Specification` → `Data Structure` (`In Data Specification`)
+→ `Data Field` (`In Data Structure`), fetched both back and confirmed the
+real `CollectionMembership` and `MemberDataField` relationships were
+created, then deleted all three. `pytest tests/micro-tests -m unit`: all
+pass, no regressions.
+
+---
 
 ### ISSUE-94: `SchemaMaker._async_delete_schema_type`/`_async_delete_schema_attribute` sent `MetadataSourceRequestBody` — the live server's schema-maker delete endpoints reject it outright
 

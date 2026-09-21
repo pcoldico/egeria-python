@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - name: Set up Python
         # Pinned explicitly: a bare `uv python install` grabs whatever's
         # newest at run time. Confirmed 2026-08-19: it silently picked up
@@ -61,15 +61,22 @@ jobs:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Build package
         run: uv build
 
       - name: Generate SBOM
+        # Written outside dist/ -- pypa/gh-action-pypi-publish globs dist/*
+        # by default and uploads everything there to PyPI as a distribution
+        # file; a bom.json/bom.xml alongside the wheel/sdist fails that
+        # upload with "InvalidDistribution: Unknown distribution format"
+        # (confirmed live on the v6.1.16 release run, the first tag pushed
+        # since this step was added in #368 -- never exercised before).
         run: |
-          uvx --from cyclonedx-bom cyclonedx-py environment --output-format json --output-file dist/bom.json
-          uvx --from cyclonedx-bom cyclonedx-py environment --output-format xml --output-file dist/bom.xml
+          mkdir -p sbom
+          uvx --from cyclonedx-bom cyclonedx-py environment --output-format json --output-file sbom/bom.json
+          uvx --from cyclonedx-bom cyclonedx-py environment --output-format xml --output-file sbom/bom.xml
 
       - name: Publish to PyPI
         # release/v1 is a floating branch, not a tag -- pypa's own convention
@@ -84,7 +91,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          files: dist/*
+          files: |
+            dist/*
+            sbom/*
           generate_release_notes: true
           draft: false
           prerelease: false

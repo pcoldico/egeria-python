@@ -13,11 +13,19 @@ generated-by-hand extract of its "Open Egeria Server issues" section as of
 independently) whenever an entry here changes status, gets fixed upstream,
 or a new server-side issue is filed.
 
-**Down to 2 entries as of this refresh** (was 5): ISSUE-52, ISSUE-54, and
-ISSUE-41/PY-21 were all confirmed fixed server-side 2026-08-30 (Egeria team)
-and moved to `PYEGERIA_ISSUES.md`'s "Fixed / Resolved" appendix — see that
-file for the full writeups. ISSUE-38/PY-18 also has a server-side fix as of
-the same date but is deliberately kept open here pending pyegeria-side
+**Note (2026-09-20):** this extract has not been fully re-derived since
+2026-08-30 — `PYEGERIA_ISSUES.md`'s "Open Egeria Server issues" section has
+since gained at least ISSUE-102 and a 2026-08-15 Postgres-checkpoint/
+background-connector-load entry that are not reflected below; only
+ISSUE-108 was appended here directly (source of record is
+`PYEGERIA_ISSUES.md`, this file is due a full re-sync).
+
+**Down to 2 entries as of the 2026-08-30 refresh** (was 5): ISSUE-52,
+ISSUE-54, and ISSUE-41/PY-21 were all confirmed fixed server-side 2026-08-30
+(Egeria team) and moved to `PYEGERIA_ISSUES.md`'s "Fixed / Resolved"
+appendix — see that file for the full writeups. ISSUE-38/PY-18 also has a
+server-side fix as of the same date but is deliberately kept open here
+pending pyegeria-side
 verification against real data.
 
 ---
@@ -447,3 +455,42 @@ holdup.
 2026-08-28 re-check) on `qs-metadata-store`, plus their failed
 `SurveyReport`/`EngineAction` pairs, left in place as reproduction
 evidence for both dates — not yet deleted.
+
+---
+
+### ISSUE-108: newly created relationships stay invisible to related-element queries for up to ~20 minutes after creation
+
+**Status:** open · **Found:** 2026-09-20, reported by the user from a
+Dr.Egeria bulk load session (1,027 expected field-link relationships).
+
+A catalog walk run immediately after a load found only 876 of 1,027
+expected field links. A second walk 12 minutes later still showed 82
+structures short. A third walk, 20 minutes after the load, showed every
+link present, with no errors raised at any point and no further action
+taken in between. See `PYEGERIA_ISSUES.md`'s full entry for the complete
+writeup, including why this looks like the same family of symptom as the
+2026-08-15 Postgres-checkpoint/background-connector-load entry above
+(server falling behind under load, catching up later) rather than a
+paging defect like ISSUE-54, and the candidate next step for actually
+correlating it with connector/checkpoint activity instead of relying on
+these three anecdotal timing checkpoints.
+
+**Update 2026-09-20:** no upstream `odpi/egeria` issue filed yet, nothing
+from the Egeria team. Two independent, unconfirmed peer leads on record in
+`PYEGERIA_ISSUES.md`'s full entry: a chronic Kafka consumer-group rebalance
+storm on `egeria-shared-kafka` (~90s recurrence, self-heals in seconds —
+timescale doesn't obviously match a one-shot ~20min resolution, so
+speculative), and a `refreshTimeInterval`-style cache/connector reload
+precedent from a different but structurally similar RE investigation. Also
+recorded there: a concrete method for telling a fixed-wall-clock cause
+apart from a volume-proportional one (smaller timed load + direct-GUID
+isolation fetch) before assuming either — not yet run.
+
+**Update 2026-09-20, small-scale reproduction attempt: not reproduced.** 20
+throwaway `Collection` elements linked via `CollectionMembership` (not the
+original `MemberDataField` relationship type) were all visible in a
+related-element query within ~1.1s of creation — no lag at current load.
+One point on the curve, not a refutation: doesn't distinguish "no bug under
+current load" from "genuinely volume-proportional, 20 is far below the
+~1,027-link scale that surfaced it." A same-relationship-type, larger-scale
+run is the real next step. Full writeup in `PYEGERIA_ISSUES.md`.
