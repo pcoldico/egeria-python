@@ -49,6 +49,9 @@ from md_processing.v2 import (
     EmbeddedProcessProcessor, InitiateEngineActionProcessor, CancelEngineActionProcessor,
     LineageLinkProcessor, UpdateLineageRelationshipProcessor,
     AssetMakerProcessor,
+    InitiateGovernanceActionProcessProcessor, InitiateGovernanceActionTypeProcessor, InitiateSurveyProcessor,
+    InitiateSubscriptionProcessor, CancelSubscriptionProcessor,
+    SubscriptionTypeProcessor, BitolDocumentProcessor,
     SchemaElementProcessor, SchemaTemplateProcessor, SchemaLinkProcessor, SchemaClassificationProcessor,
 )
 
@@ -405,8 +408,22 @@ def setup_dispatcher(client: EgeriaTech) -> V2Dispatcher:
         reg(f"Update {_lineage_type}", UpdateLineageRelationshipProcessor)
     reg("Unlink Lineage Relationship", LineageLinkProcessor)
 
-    # Asset Maker (Automated Curation's create-from-template surface)
+    # Automation (running governance engines; Create Element moved here from
+    # Asset Maker 2026-10-02 but still uses the generic create-from-template path)
+    reg("Initiate Governance Action Process", InitiateGovernanceActionProcessProcessor)
+    reg("Initiate Governance Action Type", InitiateGovernanceActionTypeProcessor)
+    reg("Initiate Survey", InitiateSurveyProcessor)
+    reg("Initiate Subscription", InitiateSubscriptionProcessor)
+    reg("Cancel Subscription", CancelSubscriptionProcessor)
+
+    # Digital Products: subscription types and ODCS/ODPS Bitol documents (product_manager.py)
+    reg("Create Subscription Type", SubscriptionTypeProcessor)
+    for _bitol_verb in ("Import", "Publish"):
+        for _bitol_doc in ("Data Contract", "Data Product"):
+            reg(f"{_bitol_verb} {_bitol_doc}", BitolDocumentProcessor)
     reg("Create Element", AssetMakerProcessor)
+
+    # Asset Maker (Automated Curation's create-from-template surface)
     reg("Create Secrets Store Element", AssetMakerProcessor)
     reg("Create Kafka Server Element", AssetMakerProcessor)
     reg("Create CSV Data File Element", AssetMakerProcessor)
@@ -669,6 +686,7 @@ async def process_md_file_v2(input_file: str, output_folder: str, directive: str
     context = {
         "directive": directive,
         "input_file": input_file,
+        "input_path": full_file_path,  # resolved path, for commands that read files relative to the document
         "request_id": str(uuid.uuid4()),
         "debug": debug,
     }

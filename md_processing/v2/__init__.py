@@ -43,4 +43,11 @@ from .embedded_process import EmbeddedProcessProcessor
 from .engine_action import InitiateEngineActionProcessor, CancelEngineActionProcessor
 from .lineage_linker import LineageLinkProcessor, UpdateLineageRelationshipProcessor
 from .asset_maker import AssetMakerProcessor
+from .automation import (
+    InitiateGovernanceActionProcessProcessor, InitiateGovernanceActionTypeProcessor, InitiateSurveyProcessor,
+    InitiateSubscriptionProcessor, CancelSubscriptionProcessor,
+)
+from .product_manager import (
+    SubscriptionTypeProcessor, BitolDocumentProcessor,
+)
 from .schema_maker import SchemaElementProcessor, SchemaTemplateProcessor, SchemaLinkProcessor, SchemaClassificationProcessor
