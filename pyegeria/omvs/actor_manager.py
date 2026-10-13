@@ -906,7 +906,7 @@ class ActorManager(ServerClient):
     @dynamic_catch
     async def _async_get_actor_profiles_by_name(
         self,
-        name: str,
+        name: str | None = None,
         metadata_element_type_name: str | None = "ActorProfile",
         metadata_element_subtypes: list[str] | None = None,
         include_only_relationships: list[str] | None = None,
@@ -953,7 +953,7 @@ class ActorManager(ServerClient):
         url = str(HttpUrl(f"{self.command_root}/actor-profiles/by-name"))
         params = {
             "filter_string": name,
-            "metadata_element_type": metadata_element_type_name,
+            "metadata_element_type_name": metadata_element_type_name,
             "metadata_element_subtypes": metadata_element_subtypes,
             "include_only_relationships": include_only_relationships,
             "skip_relationships": skip_relationships,
@@ -976,7 +976,7 @@ class ActorManager(ServerClient):
 
     def get_actor_profiles_by_name(
         self,
-        name: str,
+        name: str | None = None,
         metadata_element_type_name: str | None = "ActorProfile",
         metadata_element_subtypes: list[str] | None = None,
         include_only_relationships: list[str] | None = None,
@@ -2467,7 +2467,7 @@ class ActorManager(ServerClient):
     @dynamic_catch
     async def _async_get_actor_roles_by_name(
         self,
-        name: str,
+        name: str | None = None,
         metadata_element_type_name: str | None = "ActorRole",
         metadata_element_subtypes: list[str] | None = None,
         include_only_relationships: list[str] | None = None,
@@ -2514,7 +2514,7 @@ class ActorManager(ServerClient):
         url = str(HttpUrl(f"{self.command_root}/actor-roles/by-name"))
         params = {
             "filter_string": name,
-            "metadata_element_type": metadata_element_type_name,
+            "metadata_element_type_name": metadata_element_type_name,
             "metadata_element_subtypes": metadata_element_subtypes,
             "include_only_relationships": include_only_relationships,
             "skip_relationships": skip_relationships,
@@ -2537,7 +2537,7 @@ class ActorManager(ServerClient):
 
     def get_actor_roles_by_name(
         self,
-        name: str,
+        name: str | None = None,
         metadata_element_type_name: str | None = "ActorRole",
         metadata_element_subtypes: list[str] | None = None,
         include_only_relationships: list[str] | None = None,
@@ -4193,7 +4193,7 @@ class ActorManager(ServerClient):
         url = str(HttpUrl(f"{self.command_root}/user-identities/by-name"))
         params = {
             "filter_string": name,
-            "metadata_element_type": metadata_element_type_name,
+            "metadata_element_type_name": metadata_element_type_name,
             "metadata_element_subtypes": metadata_element_subtypes,
             "include_only_relationships": include_only_relationships,
             "skip_relationships": skip_relationships,
@@ -4885,7 +4885,7 @@ class ActorManager(ServerClient):
         url = f"{self.command_root}/contribution-records/by-name"
         params = {
             "filter_string": name,
-            "metadata_element_type": metadata_element_type_name,
+            "metadata_element_type_name": metadata_element_type_name,
             "metadata_element_subtypes": metadata_element_subtypes,
             "include_only_relationships": include_only_relationships,
             "skip_relationships": skip_relationships,
@@ -6069,7 +6069,7 @@ class ActorManager(ServerClient):
         url = f"{self.command_root}/contact-details/by-name"
         params = {
             "filter_string": name,
-            "metadata_element_type": metadata_element_type_name,
+            "metadata_element_type_name": metadata_element_type_name,
             "metadata_element_subtypes": metadata_element_subtypes,
             "include_only_relationships": include_only_relationships,
             "skip_relationships": skip_relationships,
@@ -6875,7 +6875,7 @@ class ActorManager(ServerClient):
         url = str(HttpUrl(f"{self.command_root}/perspectives/by-name"))
         params = {
             "filter_string": name,
-            "metadata_element_type": metadata_element_type_name,
+            "metadata_element_type_name": metadata_element_type_name,
             "metadata_element_subtypes": metadata_element_subtypes,
             "include_only_relationships": include_only_relationships,
             "skip_relationships": skip_relationships,
@@ -7681,7 +7681,7 @@ class ActorManager(ServerClient):
         url = str(HttpUrl(f"{self.command_root}/skills/by-name"))
         params = {
             "filter_string": name,
-            "metadata_element_type": metadata_element_type_name,
+            "metadata_element_type_name": metadata_element_type_name,
             "metadata_element_subtypes": metadata_element_subtypes,
             "include_only_relationships": include_only_relationships,
             "skip_relationships": skip_relationships,

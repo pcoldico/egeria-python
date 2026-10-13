@@ -15,6 +15,9 @@ Dr.Egeria is a Markdown-based processing engine for Egeria. It allows users to i
     - [Reference Resolution](#reference-resolution)
 4. [Supported Command Families](#supported-command-families)
 5. [CLI Utility: dr_egeria](#cli-utility-dr_egeria)
+    - [Running a folder: dr_egeria_folder](#running-a-folder-dr_egeria_folder)
+    - [The `_batch.json` manifest](#the-_batchjson-manifest)
+    - [Automatic loading in the Egeria Portal](#automatic-loading-in-the-egeria-portal)
 6. [Python API](#python-api)
     - [process_md_file (synchronous)](#process_md_file-synchronous)
     - [process_md_file_v2 (async)](#process_md_file_v2-async)
@@ -276,7 +279,8 @@ Dr.Egeria organizes its commands into "families," each corresponding to a specif
 
 - **Feedback**: Add comments, ratings, and informal tags to any Egeria element (e.g., `Add Comment`, `Attach Tag`). Also includes several `Person Action Base` commands (shared with Curation's `Create Meeting`/`Create ToDo` — see above): `Create Review`, implemented via `my_profile.create_review`; `Create Note`, which attaches an opinion/annotation about *any* target element (`Commented On Element`) via a dedicated `NoteLog`, typed as Egeria's real `Note` entity (a `Notification` subtype, added Egeria PR #9191, confirmed live 2026-08-04); and `Create Journal Entry`/`Create Activity Entry`/`Create Blog Entry`, three sibling commands for the calling user's own activity stream — private (`JournalEntry`), or public (`ActivityEntry`/`BlogEntry`) — implemented via `my_profile.journal_my_activity`/`log_my_activity`/`blog_my_activity` respectively. `Note`/`JournalEntry`/`ActivityEntry`/`BlogEntry` are all `Notification` subtypes attached through the same `NoteLog`/`AttachedNoteLogEntry` mechanism (see [egeria-project.org/concepts/notification](https://egeria-project.org/concepts/notification/)), differing only in target (any element vs. the user's own profile) and visibility.
 - **External Reference**: Link Egeria elements to external resources, media, or cited documents (e.g., `Create External Reference`, `Link Media Reference`, `Create External Standard`).
-- **Reference Data**: Attach valid values from a `ValidValueDefinition`/`ValidValueSet` to existing elements, and manage the type-system-level valid-metadata-value registry (e.g., `Link Element to Valid Values`, `Link Reference Value Assignment`, `Link Specification Property Assignment`, `Setup Valid Metadata Value`, `Set Consistent Metadata Values`). The `ValidValuesAssignment` relationship also has two contextual variants living in their natural families rather than here: `Link Question to Valid Values` (Glossary) and `Link Data Field to Valid Values` (Data Designer) — all three share one dispatcher-level processor (`ReferenceDataLinkProcessor` in `md_processing/v2/reference_data.py`).
+- **Reference Data**: Author business value lists and attach them to elements. `Create Reference Data Set` / `Create Reference Data Value` create `ReferenceDataSet` / `ReferenceDataValue` elements (the shape Egeria's own content uses). A set's members can be linked (`Members`), created inline one per line (`Values`, where commas are part of the value), or created with their own properties from a markdown table (`Value Table`: Value, Display Name, Description, Usage, Data Type, Is Case Sensitive, Default, Ordinal). Inline values are named `<set qualified name>::<value>`, so re-running a document updates them in place; members no longer listed are unlinked, never deleted. Relationships between values: `Link/Detach Valid Value Member`, `Consistent Valid Values`, `Associated Valid Values`, `Mapped Valid Values`, `Valid Value Implementation`. Assigning a set to an element: `Link Element to Valid Values` (with `Strict Requirement`) and `Link Reference Value Assignment`; the contextual variants `Link Question to Valid Values` (Glossary) and `Link Data Field to Valid Values` (Data Designer) share `ReferenceDataLinkProcessor` (`md_processing/v2/reference_data.py`). Note: the Reference Data view's finds default to type `ReferenceDataValue`, so a plain `ValidValueDefinition` is invisible to them unless the type is passed.
+- **Valid Metadata**: Manage the allowed values of Egeria's own properties (the type-system-level registry Dr.Egeria itself validates "Valid Value" attributes against) — `Setup`/`Clear Valid Metadata Value`, `Map Name` and `Map Value`, `Set Consistent Metadata Values`, and `Link`/`Detach Specification Property Assignment`. `Setup Valid Metadata Value` accepts a `Metadata Value Table` (Preferred Value, Display Name, Description) to set up several values for one property in one command. Split out of Reference Data on 2026-10-13; command names are unchanged.
 - **Views & Reports** (formerly **Report**): Run and author report specs (`FormatSet`s), and compose them — plus real Egeria `Report` assets and literal markdown text — into user-authored Dashboard Sheets:
   - `View Report`: Run a report spec ad hoc, supplying execution parameters (search string, output format, `Report Parameters` for a find-method spec's non-standard parameter, `Analytic Parameters` for an analytic-function spec's parameters, ...) at run time — no persistent element created.
   - `Create Report`: Persist a real Egeria `Report` asset that names a report spec and pins its own default execution parameters (including, for an analytic-function-backed spec, `Analytic Parameters`; or, for a report spec's action needing a parameter outside the standard find/search set — e.g. `collection_guid` for the `Collection Members` report — `Report Parameters` — see [`output-formats-and-report-specs.md`](output-formats-and-report-specs.md) for the find-method vs. analytic-function distinction), so it can be referenced by name and placed on a dashboard.
@@ -400,7 +404,77 @@ dr_egeria [OPTIONS] [INPUT_FILE]
 - `--advanced`: Enables advanced usage level, exposing additional attributes in templates and validation.
 - `--summary-only`: Suppresses per-command diagnostic output, showing only the final summary table.
 - `--debug`: Prints every Egeria API request URL and body to the console for troubleshooting.
-- `--server`, `--url`, `--userid`: Connection details for the Egeria platform.
+- `--server`, `--url`: Connection details for the Egeria platform.
+- `--userid`, `--user_pass`: The Egeria user to run as, and its password. They override `EGERIA_USER` and `EGERIA_USER_PASSWORD`. Elements the file creates are attributed to this user.
+
+### Running a folder: dr_egeria_folder
+
+`dr_egeria_folder` runs every Dr.Egeria file in a folder and its subfolders, in order, and prints a summary table at the end. It keeps going after a failure and exits with status 1 if any file failed.
+
+```bash
+dr_egeria_folder "coco-workbooks/0. data-governance-program" --validate   # check only (the default)
+dr_egeria_folder "coco-workbooks/0. data-governance-program" --process    # make the changes
+```
+
+It takes the same options as `dr_egeria`, plus:
+
+- `--results-file PATH`: also write the per-file report to `PATH`.
+- `--no-manifest-userids`: ignore `userid` settings in `_batch.json` and run every file as `--userid`.
+
+Before running, it lists each file with the user it will run as, and prints any ordering warnings (see below). The order and the run-as users come from the folder's `_batch.json` files. The Egeria Portal's automatic loading reads the same files with the same rules, so a folder runs the same way from either.
+
+### The `_batch.json` manifest
+
+An optional `_batch.json` in a folder controls how that folder's files run. Every field is optional.
+
+| Field | Meaning |
+| --- | --- |
+| `files` | Run order. An entry is a file (`"glossary.md"`), a file in a subfolder (`"sub/x.md"`), or a whole subfolder (`"sub/"`), which runs at that position in its own order. An entry can also be an object, `{"file": "risk-register.md", "userid": "juleskeeper"}`, to set its run-as user. |
+| `exclude` | Files or subfolders never to run, such as prose documents beside the command files |
+| `userid` | The Egeria user this folder's files run as; subfolders inherit it |
+| `displayName`, `description`, `canary`, `defaultEnabled`, `idempotent` | Used only by the Egeria Portal (see below) |
+
+Discovery rules:
+
+- **Unlisted content still runs.** Anything not in `files` runs after the listed items: `.md` files alphabetically, then subfolders alphabetically. Each is reported as a warning, because its position was defaulted rather than chosen. With no `_batch.json`, everything runs in that alphabetical order.
+- **Always skipped,** unless named in `files`: `README.md`, and the subfolders `dr-egeria-outbox`, `egeria-outbox`, `logs`, `data`, `templates`, `__pycache__`, `.ipynb_checkpoints` and any folder starting with `.`. The outbox folders hold Dr.Egeria's processed copies of earlier runs; those still contain live commands.
+- **Stale entries are skipped.** An entry that no longer exists is skipped with a warning.
+- **Each file runs once.** A file reachable twice, for example listed directly and also through its folder, runs once.
+
+**Run-as user.** The nearest declaration wins: the file's own entry, then the `userid` of the `_batch.json` in its folder, then the setting passed down from parent folders. A file with no declared user runs as `--userid`. Passwords never go in `_batch.json`. For a user named in a manifest, the password comes from `EGERIA_BOOTSTRAP_PASSWORD_<USERID>` (userid in upper case, e.g. `EGERIA_BOOTSTRAP_PASSWORD_JULESKEEPER`), else `--user_pass`.
+
+Example, following the step order in a README that mixes files and subfolders:
+
+```json
+{
+  "userid": "erinoverview",
+  "files": [
+    "strategic-supply-chain-analysis.md",
+    "extending-the-systems-inventory/",
+    {"file": "mapping-the-systems/", "userid": "peterprofile"},
+    "data-field-naming/",
+    "strategic-digital-products/",
+    "solution-design.md",
+    {"file": "software-development-governance-program.md", "userid": "pollytasker"}
+  ],
+  "exclude": ["founders-briefing-script.md", "strategic-supply-chain-system-matches.md"]
+}
+```
+
+If a folder's README describes a load order, put that order in `files`: neither `dr_egeria_folder` nor the Portal reads READMEs.
+
+### Automatic loading in the Egeria Portal
+
+The Egeria Portal in [egeria-workspaces](https://github.com/odpi/egeria-workspaces) loads folders of Dr.Egeria files automatically. Each folder under its `dr-egeria-inbox` is a batch, run with the `_batch.json` rules above. The Portal adds:
+
+- **Auto-heal.** A `canary` names one element the batch creates, e.g. `{"type": "Glossary", "name": "Employee Glossary"}`. If that element goes missing, for example after Egeria is reset, the Portal re-runs the batch.
+- **Cross-folder order.** A `_folder_order.json` in `dr-egeria-inbox` lists batch names to run first, in order.
+- **Batch ownership.** A subfolder that has its own symlink in `dr-egeria-inbox` runs as its own batch, and its parent skips it.
+- **An admin panel** to enable batches, run them on demand, and see each file's run-as user, run status and ordering warnings.
+
+Adding a file to a batch that is already loaded does not run it automatically. Run the batch from the admin panel, or run the folder with `dr_egeria_folder --process`.
+
+The user guide is `DR_EGERIA_AUTO_LOADING_GUIDE.md` at the root of egeria-workspaces.
 
 ---
 
